@@ -18,6 +18,7 @@ log = get_logger(__name__)
 class LLMError(str, Enum):
     KEY_EXPIRED = "key_expired"
     RATE_LIMITED = "rate_limited"
+    GENERIC_API_ERROR = "generic_api_error"
 
 
 class APIError(Exception):
@@ -158,7 +159,26 @@ class BaseLLMClient:
         )
         t0 = time()
 
-        for _ in range(max_retries):
+        remaining_retries = max_retries
+        while True:
+            if remaining_retries == 0:
+                # We've run out of auto-retries
+                if request_log.error:
+                    last_error_msg = f"Error connecting to the LLM: {request_log.error}"
+                else:
+                    last_error_msg = "Error parsing LLM response"
+
+                # If we can, ask the user if they want to keep retrying
+                if self.error_handler:
+                    should_retry = await self.error_handler(LLMError.GENERIC_API_ERROR, message=last_error_msg)
+                    if should_retry:
+                        remaining_retries = max_retries
+                        continue
+
+                # They don't want to retry (or we can't ask them), raise the last error and stop Pythagora
+                raise APIError(last_error_msg)
+
+            remaining_retries -= 1
             request_log.messages = convo.messages[:]
             request_log.response = None
             request_log.error = None
@@ -239,7 +259,15 @@ class BaseLLMClient:
                 log.warning(f"API error: {err}", exc_info=True)
                 request_log.error = str(f"API error: {err}")
                 request_log.status = LLMRequestStatus.ERROR
-                return None, request_log
+                continue
+            except (openai.APIError, anthropic.APIError, groq.APIError) as err:
+                # Generic LLM API error
+                # Make sure this handler is last in the chain as some of the above
+                # errors inherit from these `APIError` classes
+                log.warning(f"LLM API error {err}", exc_info=True)
+                request_log.error = f"LLM had an error processing our request: {err}"
+                request_log.status = LLMRequestStatus.ERROR
+                continue
 
             request_log.response = response
 
@@ -256,10 +284,6 @@ class BaseLLMClient:
                     continue
             else:
                 break
-        else:
-            log.warning(f"Failed to parse response after {max_retries} retries")
-            response = None
-            request_log.status = LLMRequestStatus.ERROR
 
         t1 = time()
         request_log.duration = t1 - t0
