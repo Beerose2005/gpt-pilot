@@ -73,9 +73,11 @@ class Developer(BaseAgent):
             log.debug(f"Some files are missing descriptions: {', '.join(missing_descriptions)}, reqesting analysis")
             return AgentResponse.describe_files(self)
 
-        log.debug(f"Current state files: {len(self.current_state.files)}, relevant {self.current_state.relevant_files}")
+        log.debug(
+            f"Current state files: {len(self.current_state.files)}, relevant {self.current_state.relevant_files or []}"
+        )
         # Check which files are relevant to the current task
-        if self.current_state.files and not self.current_state.relevant_files:
+        if self.current_state.files and self.current_state.relevant_files is None:
             await self.get_relevant_files()
             return AgentResponse.done(self)
 
@@ -303,7 +305,7 @@ class Developer(BaseAgent):
 
         self.next_state.current_task["description"] = user_response.text
         self.next_state.current_task["run_always"] = True
-        self.next_state.relevant_files = []
+        self.next_state.relevant_files = None
         log.info(f"Task description updated to: {user_response.text}")
         # Orchestrator will rerun us with the new task description
         return False
