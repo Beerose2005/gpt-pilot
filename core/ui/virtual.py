@@ -1,24 +1,25 @@
 from typing import Optional
 
-from prompt_toolkit.shortcuts import PromptSession
-
 from core.log import get_logger
-from core.ui.base import ProjectStage, UIBase, UIClosedError, UISource, UserInput
+from core.ui.base import ProjectStage, UIBase, UISource, UserInput
 
 log = get_logger(__name__)
 
 
-class PlainConsoleUI(UIBase):
+class VirtualUI(UIBase):
     """
-    UI adapter for plain (no color) console output.
+    Testing UI adapter.
     """
 
+    def __init__(self, inputs: list[dict[str, str]]):
+        self.virtual_inputs = [UserInput(**input) for input in inputs]
+
     async def start(self) -> bool:
-        log.debug("Starting console UI")
+        log.debug("Starting test UI")
         return True
 
     async def stop(self):
-        log.debug("Stopping console UI")
+        log.debug("Stopping test UI")
 
     async def send_stream_chunk(self, chunk: Optional[str], *, source: Optional[UISource] = None):
         if chunk is None:
@@ -34,8 +35,7 @@ class PlainConsoleUI(UIBase):
             print(message)
 
     async def send_key_expired(self, message: Optional[str]):
-        if message:
-            await self.send_message(message)
+        pass
 
     async def send_app_finished(self):
         pass
@@ -60,29 +60,22 @@ class PlainConsoleUI(UIBase):
         else:
             print(f"{question}")
 
-        if buttons:
-            for k, v in buttons.items():
-                default_str = " (default)" if k == default else ""
-                print(f"  [{k}]: {v}{default_str}")
+        if self.virtual_inputs:
+            ret = self.virtual_inputs[0]
+            self.virtual_inputs = self.virtual_inputs[1:]
+            return ret
 
-        session = PromptSession("> ")
-
-        while True:
-            try:
-                choice = await session.prompt_async(default=initial_text or "")
-                choice = choice.strip()
-            except KeyboardInterrupt:
-                raise UIClosedError()
-            if not choice and default:
-                choice = default
-            if buttons and choice in buttons:
-                return UserInput(button=choice, text=None)
-            if buttons_only:
-                print("Please choose one of available options")
-                continue
-            if choice or allow_empty:
-                return UserInput(button=None, text=choice)
-            print("Please provide a valid input")
+        if "continue" in buttons:
+            return UserInput(button="continue", text=None)
+        elif default:
+            if buttons:
+                return UserInput(button=default, text=None)
+            else:
+                return UserInput(text=default)
+        elif buttons_only:
+            return UserInput(button=list(buttons.keys)[0])
+        else:
+            return UserInput(text="")
 
     async def send_project_stage(self, stage: ProjectStage):
         pass
@@ -133,4 +126,4 @@ class PlainConsoleUI(UIBase):
         pass
 
 
-__all__ = ["PlainConsoleUI"]
+__all__ = ["VirtualUI"]
