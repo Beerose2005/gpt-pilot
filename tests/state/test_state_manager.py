@@ -31,7 +31,8 @@ async def test_create_project(mock_get_config, testmanager):
     assert sm.current_state == initial_state
 
     projects = await sm.list_projects()
-    assert projects == [project]
+    assert projects[0][0] == project.id
+    assert projects[0][1] == project.name
 
 
 @pytest.mark.asyncio
@@ -40,10 +41,10 @@ async def test_load_project(mock_get_config, testmanager):
     mock_get_config.return_value.fs.type = "memory"
     sm = StateManager(testmanager)
     project = await sm.create_project("test")
-
+    project_id = project.id
+    await sm.commit()
     project_state = await sm.load_project(project_id=project.id)
-
-    assert project_state.branch.project.id == project.id
+    assert project_state.branch.project.id == project_id
 
 
 @pytest.mark.asyncio
@@ -54,7 +55,8 @@ async def test_delete_project(mock_get_config, testmanager):
     project = await sm.create_project("test")
 
     projects = await sm.list_projects()
-    assert projects == [project]
+    assert projects[0][0] == project.id
+    assert projects[0][1] == project.name
 
     await sm.delete_project(project.id)
     projects = await sm.list_projects()
@@ -67,10 +69,11 @@ async def test_load_project_branch(mock_get_config, testmanager):
     mock_get_config.return_value.fs.type = "memory"
     sm = StateManager(testmanager)
     project = await sm.create_project("test")
-
+    project_id = project.id
+    await sm.commit()
     project_state = await sm.load_project(branch_id=project.branches[0].id)
 
-    assert project_state.branch.project.id == project.id
+    assert project_state.branch.project.id == project_id
 
 
 @pytest.mark.asyncio
@@ -90,10 +93,11 @@ async def test_load_specific_step(mock_get_config, testmanager):
     mock_get_config.return_value.fs.type = "memory"
     sm = StateManager(testmanager)
     project = await sm.create_project("test")
+    project_id = project.id
+    await sm.commit()
+    project_state = await sm.load_project(project_id=project_id, step_index=project.branches[0].states[0].step_index)
 
-    project_state = await sm.load_project(project_id=project.id, step_index=project.branches[0].states[0].step_index)
-
-    assert project_state.branch.project.id == project.id
+    assert project_state.branch.project.id == project_id
 
 
 @pytest.mark.asyncio
@@ -139,7 +143,7 @@ async def test_save_file(mock_get_config, testmanager):
     # Create an instance of StateManager with mocked UI
     sm = StateManager(testmanager, ui)
     await sm.create_project("test")
-
+    sm.file_system = await sm.init_file_system(load_existing=False)
     # The initial state in the project is weird because it's both current
     # and next, and this can play havoc with the SQLAlchemy session and
     # object caching. Commit it here to get that out of our way.
@@ -164,59 +168,58 @@ async def test_save_file(mock_get_config, testmanager):
 @pytest.mark.asyncio
 @patch("core.state.state_manager.get_config")
 async def test_importing_changed_files_to_db(mock_get_config, tmpdir, testmanager):
-    mock_get_config.return_value.fs = FileSystemConfig(workspace_root=str(tmpdir))
+    mock_get_config.return_value.fs = FileSystemConfig(workspace_root=str(tmpdir), type="local")
+
     sm = StateManager(testmanager)
-    project = await sm.create_project("test")
+    await sm.create_project("test", "node", "test")
+    sm.file_system = await sm.init_file_system(load_existing=False)
 
-    async with testmanager as session:
-        session.add(project)
-        await sm.commit()
-        await sm.save_file("file1.txt", "this is the content 1")
-        await sm.save_file("file2.txt", "this is the content 2")
-        await sm.save_file("file3.txt", "this is the content 3")
-        await sm.commit()
+    await sm.commit()
+    await sm.save_file("file1.txt", "this is the content 1")
+    await sm.save_file("file2.txt", "this is the content 2")
+    await sm.save_file("file3.txt", "this is the content 3")
+    await sm.commit()
 
-        os.remove(os.path.join(tmpdir, "test", "file1.txt"))  # Remove the first file
-        with open(os.path.join(tmpdir, "test", "file2.txt"), "a") as f:
-            f.write("modified")  # Change the second file
+    os.remove(os.path.join(tmpdir, "test", "file1.txt"))  # Remove the first file
+    with open(os.path.join(tmpdir, "test", "file2.txt"), "a") as f:
+        f.write("modified")  # Change the second file
 
-        await sm.import_files()
-        await sm.commit()
+    await sm.import_files()
+    await sm.commit()
 
-        assert not os.path.exists(os.path.join(tmpdir, "test", "file1.txt"))
-        assert os.path.exists(os.path.join(tmpdir, "test", "file2.txt"))
-        assert os.path.exists(os.path.join(tmpdir, "test", "file3.txt"))
+    assert not os.path.exists(os.path.join(tmpdir, "test", "file1.txt"))
+    assert os.path.exists(os.path.join(tmpdir, "test", "file2.txt"))
+    assert os.path.exists(os.path.join(tmpdir, "test", "file3.txt"))
 
-        db_files = set(f.path for f in sm.current_state.files)
-        assert "file1.txt" not in db_files
-        assert "file2.txt" in db_files
-        assert "file3.txt" in db_files
+    db_files = set(f.path for f in sm.current_state.files)
+    assert "file1.txt" not in db_files
+    assert "file2.txt" in db_files
+    assert "file3.txt" in db_files
 
 
 @pytest.mark.asyncio
 @patch("core.state.state_manager.get_config")
 async def test_restoring_files_from_db(mock_get_config, tmpdir, testmanager):
-    mock_get_config.return_value.fs = FileSystemConfig(workspace_root=str(tmpdir))
+    mock_get_config.return_value.fs = FileSystemConfig(workspace_root=str(tmpdir), type="local")
     sm = StateManager(testmanager)
-    project = await sm.create_project("test1")
+    await sm.create_project("test1", "node", "test1")
+    sm.file_system = await sm.init_file_system(load_existing=False)
 
-    async with testmanager as session:
-        session.add(project)
-        await sm.commit()
-        await sm.save_file("file1.txt", "this is the content 1")
-        await sm.save_file("file2.txt", "this is the content 2")
-        await sm.save_file("file3.txt", "this is the content 3")
-        await sm.commit()
+    await sm.commit()
+    await sm.save_file("file1.txt", "this is the content 1")
+    await sm.save_file("file2.txt", "this is the content 2")
+    await sm.save_file("file3.txt", "this is the content 3")
+    await sm.commit()
 
-        os.remove(os.path.join(tmpdir, "test1", "file1.txt"))  # Remove the first file
-        with open(os.path.join(tmpdir, "test1", "file2.txt"), "a") as f:
-            f.write("modified")  # Change the second file
-        await sm.restore_files()
+    os.remove(os.path.join(tmpdir, "test1", "file1.txt"))  # Remove the first file
+    with open(os.path.join(tmpdir, "test1", "file2.txt"), "a") as f:
+        f.write("modified")  # Change the second file
+    await sm.restore_files()
 
-        assert os.path.exists(os.path.join(tmpdir, "test1", "file1.txt"))
-        assert os.path.exists(os.path.join(tmpdir, "test1", "file2.txt"))
-        assert os.path.exists(os.path.join(tmpdir, "test1", "file3.txt"))
+    assert os.path.exists(os.path.join(tmpdir, "test1", "file1.txt"))
+    assert os.path.exists(os.path.join(tmpdir, "test1", "file2.txt"))
+    assert os.path.exists(os.path.join(tmpdir, "test1", "file3.txt"))
 
-        assert open(os.path.join(tmpdir, "test1", "file1.txt")).read() == "this is the content 1"
-        assert open(os.path.join(tmpdir, "test1", "file2.txt")).read() == "this is the content 2"
-        assert open(os.path.join(tmpdir, "test1", "file3.txt")).read() == "this is the content 3"
+    assert open(os.path.join(tmpdir, "test1", "file1.txt")).read() == "this is the content 1"
+    assert open(os.path.join(tmpdir, "test1", "file2.txt")).read() == "this is the content 2"
+    assert open(os.path.join(tmpdir, "test1", "file3.txt")).read() == "this is the content 3"

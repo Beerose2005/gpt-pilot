@@ -1,0 +1,6 @@
+{{ file_content }}
+
+I have external documentation in Swagger Open API format.
+Create a comma separated list of short words topics of the description of the file so that I can search for the relevant parts of the documentation.
+Use up to 5 words max.
+If the file does not need external API documentation, just return "None" and nothing else, no explanation needed.

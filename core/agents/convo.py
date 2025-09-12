@@ -97,6 +97,18 @@ class AgentConvo(Convo):
         self.messages = self.messages[:trim_index] + self.messages[trim_index + trim_count :]
         return self
 
+    def slice(self, slice_index: int, slice_count: int) -> "AgentConvo":
+        """
+        Create a new conversation containing messages from slice_index to the end, excluding slice_count messages.
+
+        :param slice_index: Starting index to slice from
+        :param slice_count: Number of messages to exclude from the end
+        :return: self for method chaining
+        """
+        end_index = max(slice_index, len(self.messages) - slice_count)
+        self.messages = self.messages[:slice_index] + self.messages[end_index:]
+        return self
+
     def require_schema(self, model: BaseModel) -> "AgentConvo":
         def remove_defs(d):
             if isinstance(d, dict):

@@ -7,6 +7,7 @@ from core.config import LLMConfig
 from core.llm.base import APIError
 from core.llm.convo import Convo
 from core.llm.openai_client import OpenAIClient
+from core.state.state_manager import StateManager
 
 
 async def mock_response_generator(*content):
@@ -17,15 +18,28 @@ async def mock_response_generator(*content):
 
 
 @pytest.mark.asyncio
+@patch("core.cli.helpers.StateManager")
 @patch("core.llm.openai_client.AsyncOpenAI")
-async def test_openai_calls_gpt(mock_AsyncOpenAI):
+async def test_openai_calls_gpt(mock_AsyncOpenAI, mock_state_manager):
     cfg = LLMConfig(model="gpt-4-turbo")
     convo = Convo("system hello").user("user hello")
 
+    # Create AsyncMock for the chat.completions.create method
     stream = AsyncMock(return_value=mock_response_generator("hello", None, "world"))
-    mock_AsyncOpenAI.return_value.chat.completions.create = stream
 
-    llm = OpenAIClient(cfg)
+    # Set up the complete mock chain
+    mock_chat = AsyncMock()
+    mock_completions = AsyncMock()
+    mock_completions.create = stream
+    mock_chat.completions = mock_completions
+
+    # Configure the AsyncOpenAI mock
+    mock_client = AsyncMock()
+    mock_client.chat = mock_chat
+    mock_AsyncOpenAI.return_value = mock_client
+
+    sm = StateManager(mock_state_manager)
+    llm = OpenAIClient(cfg, state_manager=sm)
     response, req_log = await llm(convo, json_mode=True)
     assert response == "helloworld"
 
@@ -49,40 +63,67 @@ async def test_openai_calls_gpt(mock_AsyncOpenAI):
 
 
 @pytest.mark.asyncio
+@patch("core.cli.helpers.StateManager")
 @patch("core.llm.openai_client.AsyncOpenAI")
-async def test_openai_stream_handler(mock_AsyncOpenAI):
+async def test_openai_stream_handler(mock_AsyncOpenAI, mock_state_manager):
     cfg = LLMConfig(model="gpt-4-turbo")
     convo = Convo("system hello").user("user hello")
 
     stream_handler = AsyncMock()
 
+    # Create AsyncMock for the chat.completions.create method
     stream = AsyncMock(return_value=mock_response_generator("hello", None, "world"))
-    mock_AsyncOpenAI.return_value.chat.completions.create = stream
 
-    llm = OpenAIClient(cfg, stream_handler=stream_handler)
+    # Set up the complete mock chain
+    mock_chat = AsyncMock()
+    mock_completions = AsyncMock()
+    mock_completions.create = stream
+    mock_chat.completions = mock_completions
+
+    # Configure the AsyncOpenAI mock
+    mock_client = AsyncMock()
+    mock_client.chat = mock_chat
+    mock_AsyncOpenAI.return_value = mock_client
+
+    sm = StateManager(mock_state_manager)
+    llm = OpenAIClient(cfg, stream_handler=stream_handler, state_manager=sm)
     await llm(convo)
 
     stream_handler.assert_has_awaits([call("hello"), call("world")])
 
 
 @pytest.mark.asyncio
+@patch("core.cli.helpers.StateManager")
 @patch("core.llm.openai_client.AsyncOpenAI")
-async def test_openai_parser_with_retries(mock_AsyncOpenAI):
+async def test_openai_parser_with_retries(mock_AsyncOpenAI, mock_state_manager):
     cfg = LLMConfig(model="gpt-4-turbo")
     convo = Convo("system").user("user")
 
     parser = MagicMock()
     parser.side_effect = [ValueError("Try again"), "world"]
 
+    # Create AsyncMock for the chat.completions.create method with side effects
     stream = AsyncMock(
         side_effect=[
             mock_response_generator("hello"),
             mock_response_generator("world"),
         ]
     )
-    mock_AsyncOpenAI.return_value.chat.completions.create = stream
 
-    llm = OpenAIClient(cfg)
+    # Set up the complete mock chain
+    mock_chat = AsyncMock()
+    mock_completions = AsyncMock()
+    mock_completions.create = stream
+    mock_chat.completions = mock_completions
+
+    # Configure the AsyncOpenAI mock
+    mock_client = AsyncMock()
+    mock_client.chat = mock_chat
+    mock_AsyncOpenAI.return_value = mock_client
+
+    # Create StateManager instance
+    sm = StateManager(mock_state_manager)
+    llm = OpenAIClient(cfg, state_manager=sm)
     response, req_log = await llm(convo, parser=parser)
 
     assert response == "world"
@@ -101,26 +142,41 @@ async def test_openai_parser_with_retries(mock_AsyncOpenAI):
 
 
 @pytest.mark.asyncio
+@patch("core.cli.helpers.StateManager")
 @patch("core.llm.openai_client.AsyncOpenAI")
-async def test_openai_parser_fails(mock_AsyncOpenAI):
+async def test_openai_parser_fails(mock_AsyncOpenAI, mock_state_manager):
     cfg = LLMConfig(model="gpt-4-turbo")
     convo = Convo("system").user("user")
 
     parser = MagicMock()
     parser.side_effect = [ValueError("Try again")]
 
+    # Create AsyncMock for the chat.completions.create method
     stream = AsyncMock(return_value=mock_response_generator("hello"))
-    mock_AsyncOpenAI.return_value.chat.completions.create = stream
 
-    llm = OpenAIClient(cfg)
+    # Set up the complete mock chain
+    mock_chat = AsyncMock()
+    mock_completions = AsyncMock()
+    mock_completions.create = stream
+    mock_chat.completions = mock_completions
+
+    # Configure the AsyncOpenAI mock
+    mock_client = AsyncMock()
+    mock_client.chat = mock_chat
+    mock_AsyncOpenAI.return_value = mock_client
+
+    # Create state manager
+    sm = StateManager(mock_state_manager)
+    llm = OpenAIClient(cfg, state_manager=sm)
 
     with pytest.raises(APIError, match="Error parsing response"):
         await llm(convo, parser=parser, max_retries=1)
 
 
 @pytest.mark.asyncio
+@patch("core.cli.helpers.StateManager")
 @patch("core.llm.openai_client.AsyncOpenAI")
-async def test_openai_error_handler_success(mock_AsyncOpenAI):
+async def test_openai_error_handler_success(mock_AsyncOpenAI, mock_state_manager):
     """
     Test that LLM client auto-retries up to max_retries, then calls
     the error handler to decide what next.
@@ -137,7 +193,20 @@ async def test_openai_error_handler_success(mock_AsyncOpenAI):
         assert message == expected_errors.pop(0)
         return True
 
-    llm = OpenAIClient(cfg, error_handler=error_handler)
+    # Set up the complete mock chain
+    mock_chat = AsyncMock()
+    mock_completions = AsyncMock()
+    mock_chat.completions = mock_completions
+
+    # Configure the AsyncOpenAI mock
+    mock_client = AsyncMock()
+    mock_client.chat = mock_chat
+    mock_AsyncOpenAI.return_value = mock_client
+
+    # Create StateManager instance
+    sm = StateManager(mock_state_manager)
+
+    llm = OpenAIClient(cfg, error_handler=error_handler, state_manager=sm)
     llm._make_request = AsyncMock(
         side_effect=[
             openai.APIConnectionError(message="first", request=None),  # auto-retried
@@ -152,8 +221,9 @@ async def test_openai_error_handler_success(mock_AsyncOpenAI):
 
 
 @pytest.mark.asyncio
+@patch("core.cli.helpers.StateManager")
 @patch("core.llm.openai_client.AsyncOpenAI")
-async def test_openai_error_handler_failure(mock_AsyncOpenAI):
+async def test_openai_error_handler_failure(mock_AsyncOpenAI, mock_state_manager):
     """
     Test that LLM client raises an API error if error handler decides
     not to retry.
@@ -161,9 +231,24 @@ async def test_openai_error_handler_failure(mock_AsyncOpenAI):
     cfg = LLMConfig(model="gpt-4-turbo")
     convo = Convo("system hello").user("user hello")
 
+    # Set up error handler mock
     error_handler = AsyncMock(return_value=False)
-    llm = OpenAIClient(cfg, error_handler=error_handler)
-    llm._make_request = AsyncMock(side_effect=[openai.APIError("test error", None, body=None)])
+
+    # Set up the complete mock chain
+    mock_chat = AsyncMock()
+    mock_completions = AsyncMock()
+    mock_completions.create = AsyncMock(side_effect=[openai.APIError("test error", None, body=None)])
+    mock_chat.completions = mock_completions
+
+    # Configure the AsyncOpenAI mock
+    mock_client = AsyncMock()
+    mock_client.chat = mock_chat
+    mock_AsyncOpenAI.return_value = mock_client
+
+    # Create state manager
+    sm = StateManager(mock_state_manager)
+
+    llm = OpenAIClient(cfg, error_handler=error_handler, state_manager=sm)
 
     with pytest.raises(APIError, match="test error"):
         await llm(convo, max_retries=1)
@@ -181,8 +266,11 @@ async def test_openai_error_handler_failure(mock_AsyncOpenAI):
         (1, "", "1h1m1s", 3661),
     ],
 )
+@patch("core.cli.helpers.StateManager")
 @patch("core.llm.openai_client.AsyncOpenAI")
-def test_openai_rate_limit_parser(mock_AsyncOpenAI, remaining_tokens, reset_tokens, reset_requests, expected):
+def test_openai_rate_limit_parser(
+    mock_AsyncOpenAI, mock_state_manager, remaining_tokens, reset_tokens, reset_requests, expected
+):
     headers = {
         "x-ratelimit-remaining-tokens": remaining_tokens,
         "x-ratelimit-reset-tokens": reset_tokens,
@@ -190,5 +278,6 @@ def test_openai_rate_limit_parser(mock_AsyncOpenAI, remaining_tokens, reset_toke
     }
     err = MagicMock(response=MagicMock(headers=headers))
 
-    llm = OpenAIClient(LLMConfig(model="gpt-4"))
+    sm = StateManager(mock_state_manager)
+    llm = OpenAIClient(LLMConfig(model="gpt-4"), state_manager=sm)
     assert int(llm.rate_limit_sleep(err).total_seconds()) == expected

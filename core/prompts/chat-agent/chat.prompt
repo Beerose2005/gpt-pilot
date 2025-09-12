@@ -1,0 +1,35 @@
+This is the description of the app you are working with:
+{{ initial_description }}
+
+{% if task_description is defined and task_description %}
+Currently, you are working on the following task:
+{{ task_description }}
+{% endif %}
+
+{% if bug_hunt_cycle_user_feedback is defined and bug_hunt_cycle_user_feedback %}
+You are currently working on a bug report that the user reported like this:
+{{ bug_hunt_cycle_user_feedback }}
+{% endif %}
+
+{% if testing_instructions is defined and testing_instructions %}
+The user is currently testing how the task was implemented and was given the following instructions to test the app:
+{{ testing_instructions }}
+{% endif %}
+
+{% if command_run is defined and command_run %}
+Currently, you're waiting for the user to approve the following command to be run:
+```text
+{{ command_run }}
+```
+{% endif %}
+
+{% if human_intervention is defined and human_intervention %}
+Currently, you asked the human user to do the following steps in order to continue with the development of the app:
+```text
+{{ human_intervention }}
+```
+{% endif %}
+
+{% if user_input is defined and user_input %}
+Now, the human asked said the following: `{{ user_input }}`. Please respond as a professional developer, be helpful and focus on what the human said.
+{% endif %}

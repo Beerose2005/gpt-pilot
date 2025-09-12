@@ -22,7 +22,12 @@ class VirtualUI(UIBase):
         log.debug("Stopping test UI")
 
     async def send_stream_chunk(
-        self, chunk: Optional[str], *, source: Optional[UISource] = None, project_state_id: Optional[str] = None
+        self,
+        chunk: Optional[str],
+        *,
+        source: Optional[UISource] = None,
+        project_state_id: Optional[str] = None,
+        route: Optional[str] = None,
     ):
         if chunk is None:
             # end of stream
@@ -30,13 +35,21 @@ class VirtualUI(UIBase):
         else:
             print(chunk, end="", flush=True)
 
+    async def send_user_input_history(
+        self,
+        message: str,
+        source: Optional[UISource] = None,
+        project_state_id: Optional[str] = None,
+    ):
+        raise NotImplementedError()
+
     async def send_message(
         self,
         message: str,
         *,
         source: Optional[UISource] = None,
         project_state_id: Optional[str] = None,
-        extra_info: Optional[str] = None,
+        extra_info: Optional[dict] = None,
     ):
         if source:
             print(f"[{source}] {message}")
@@ -44,6 +57,9 @@ class VirtualUI(UIBase):
             print(message)
 
     async def send_key_expired(self, message: Optional[str] = None):
+        pass
+
+    async def send_token_expired(self):
         pass
 
     async def send_app_finished(
@@ -76,7 +92,7 @@ class VirtualUI(UIBase):
         initial_text: Optional[str] = None,
         source: Optional[UISource] = None,
         project_state_id: Optional[str] = None,
-        extra_info: Optional[str] = None,
+        extra_info: Optional[dict] = None,
         placeholder: Optional[str] = None,
     ) -> UserInput:
         if source:
@@ -150,13 +166,13 @@ class VirtualUI(UIBase):
     async def send_app_link(self, app_link: str):
         pass
 
-    async def open_editor(self, file: str, line: Optional[int] = None):
+    async def open_editor(self, file: str, line: Optional[int] = None, wait_for_response: bool = False):
         pass
 
-    async def send_project_root(self, path: str):
+    async def send_project_info(self, name: str, project_id: str, folder_name: str, created_at: str):
         pass
 
-    async def start_important_stream(self):
+    async def set_important_stream(self, important_stream: bool = True):
         pass
 
     async def start_breakdown_stream(self):
@@ -180,8 +196,8 @@ class VirtualUI(UIBase):
     async def generate_diff(
         self,
         file_path: str,
-        file_old: str,
-        file_new: str,
+        old_content: str,
+        new_content: str,
         n_new_lines: int = 0,
         n_del_lines: int = 0,
         source: Optional[UISource] = None,
@@ -197,13 +213,40 @@ class VirtualUI(UIBase):
     async def loading_finished(self):
         pass
 
-    async def send_project_description(self, description: str):
+    async def send_project_description(self, state: dict):
         pass
 
     async def send_features_list(self, features: list[str]):
         pass
 
     async def import_project(self, project_dir: str):
+        pass
+
+    async def send_back_logs(
+        self,
+        items: list[dict],
+    ):
+        pass
+
+    async def send_fatal_error(
+        self,
+        message: str,
+        extra_info: Optional[dict] = None,
+        source: Optional[UISource] = None,
+        project_state_id: Optional[str] = None,
+    ):
+        pass
+
+    async def send_front_logs_headers(
+        self,
+        project_state_id: str,
+        labels: list[str],
+        title: str,
+        task_id: Optional[str] = None,
+    ):
+        pass
+
+    async def clear_main_logs(self):
         pass
 
 

@@ -3,17 +3,28 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Optional, Union
 from uuid import UUID, uuid4
 
-from sqlalchemy import ForeignKey, UniqueConstraint, delete, inspect
+from sqlalchemy import ForeignKey, UniqueConstraint, and_, delete, inspect, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, load_only, mapped_column, relationship
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.sql import func
 
+from core.config.actions import FE_START, PS_EPIC_COMPLETE
 from core.db.models import Base, FileContent
 from core.log import get_logger
 
 if TYPE_CHECKING:
-    from core.db.models import Branch, ExecLog, File, FileContent, LLMRequest, Specification, UserInput
+    from core.db.models import (
+        Branch,
+        ChatConvo,
+        ExecLog,
+        File,
+        FileContent,
+        KnowledgeBase,
+        LLMRequest,
+        Specification,
+        UserInput,
+    )
 
 log = get_logger(__name__)
 
@@ -25,7 +36,6 @@ class TaskStatus:
     IN_PROGRESS = "in_progress"
     REVIEWED = "reviewed"
     DOCUMENTED = "documented"
-    EPIC_UPDATED = "epic_updated"
     DONE = "done"
     SKIPPED = "skipped"
 
@@ -59,6 +69,7 @@ class ProjectState(Base):
     branch_id: Mapped[UUID] = mapped_column(ForeignKey("branches.id", ondelete="CASCADE"))
     prev_state_id: Mapped[Optional[UUID]] = mapped_column(ForeignKey("project_states.id", ondelete="CASCADE"))
     specification_id: Mapped[int] = mapped_column(ForeignKey("specifications.id"))
+    knowledge_base_id: Mapped[int] = mapped_column(ForeignKey("knowledge_bases.id"))
 
     # Attributes
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -67,7 +78,6 @@ class ProjectState(Base):
     tasks: Mapped[list[dict]] = mapped_column(default=list)
     steps: Mapped[list[dict]] = mapped_column(default=list)
     iterations: Mapped[list[dict]] = mapped_column(default=list)
-    knowledge_base: Mapped[dict] = mapped_column(default=dict, server_default="{}")
     relevant_files: Mapped[Optional[list[str]]] = mapped_column(default=None)
     modified_files: Mapped[dict] = mapped_column(default=dict)
     docs: Mapped[Optional[list[dict]]] = mapped_column(default=None)
@@ -90,9 +100,13 @@ class ProjectState(Base):
         cascade="all,delete-orphan",
     )
     specification: Mapped["Specification"] = relationship(back_populates="project_states", lazy="selectin")
+    knowledge_base: Mapped["KnowledgeBase"] = relationship(back_populates="project_states", lazy="selectin")
     llm_requests: Mapped[list["LLMRequest"]] = relationship(back_populates="project_state", cascade="all", lazy="raise")
     user_inputs: Mapped[list["UserInput"]] = relationship(back_populates="project_state", cascade="all", lazy="raise")
     exec_logs: Mapped[list["ExecLog"]] = relationship(back_populates="project_state", cascade="all", lazy="raise")
+    chat_convos: Mapped[list["ChatConvo"]] = relationship(
+        back_populates="project_state", cascade="all,delete-orphan", lazy="raise"
+    )
 
     @property
     def unfinished_steps(self) -> list[dict]:
@@ -122,6 +136,8 @@ class ProjectState(Base):
 
         :return: List of unfinished iterations.
         """
+        if not self.iterations:
+            return []
         return [
             iteration for iteration in self.iterations if iteration.get("status") not in (None, IterationStatus.DONE)
         ]
@@ -145,6 +161,8 @@ class ProjectState(Base):
 
         :return: List of unfinished tasks.
         """
+        if not self.tasks:
+            return []
         return [task for task in self.tasks if task.get("status") != TaskStatus.DONE]
 
     @property
@@ -206,13 +224,47 @@ class ProjectState(Base):
         :param branch: The branch to create the state for.
         :return: The new ProjectState object.
         """
-        from core.db.models import Specification
+        from core.db.models import KnowledgeBase, Specification
 
         return ProjectState(
             branch=branch,
             specification=Specification(),
+            knowledge_base=KnowledgeBase(),
             step_index=1,
+            action="Initial project state",
         )
+
+    @staticmethod
+    async def get_project_states(
+        session: "AsyncSession",
+        project_id: Optional[UUID] = None,
+        branch_id: Optional[UUID] = None,
+    ) -> list["ProjectState"]:
+        from core.db.models import Branch, ProjectState
+
+        branch = None
+        limit = 100
+
+        if branch_id:
+            branch = await session.execute(select(Branch).where(Branch.id == branch_id))
+            branch = branch.scalar_one_or_none()
+        elif project_id:
+            branch = await session.execute(select(Branch).where(Branch.project_id == project_id))
+            branch = branch.scalar_one_or_none()
+
+        if branch:
+            query = (
+                select(ProjectState)
+                .where(ProjectState.branch_id == branch.id)
+                .order_by(ProjectState.step_index.desc())  # Get the latest 100 states
+                .limit(limit)
+            )
+
+            project_states_result = await session.execute(query)
+            project_states = project_states_result.scalars().all()
+            return sorted(project_states, key=lambda x: x.step_index)
+
+        return []
 
     async def create_next_state(self) -> "ProjectState":
         """
@@ -239,7 +291,7 @@ class ProjectState(Base):
             tasks=deepcopy(self.tasks),
             steps=deepcopy(self.steps),
             iterations=deepcopy(self.iterations),
-            knowledge_base=deepcopy(self.knowledge_base),
+            knowledge_base=self.knowledge_base,
             files=[],
             relevant_files=deepcopy(self.relevant_files),
             modified_files=deepcopy(self.modified_files),
@@ -256,6 +308,9 @@ class ProjectState(Base):
         for file in await self.awaitable_attrs.files:
             clone = file.clone()
             new_state.files.append(clone)
+            # Load content for the clone using the same content_id
+            result = await session.execute(select(FileContent).where(FileContent.id == file.content_id))
+            clone.content = result.scalar_one_or_none()
 
         return new_state
 
@@ -297,6 +352,8 @@ class ProjectState(Base):
         self.unfinished_epics[0]["completed"] = True
         self.tasks = []
         flag_modified(self, "epics")
+        if len(self.unfinished_epics) > 0:
+            self.next_state.action = PS_EPIC_COMPLETE.format(self.unfinished_epics[0]["name"])
 
     def complete_iteration(self):
         if not self.unfinished_iterations:
@@ -342,13 +399,17 @@ class ProjectState(Base):
 
     def flag_knowledge_base_as_modified(self):
         """
-        Flag the knowledge base field as having been modified
+        Flag the knowledge base fields as having been modified
 
-        Used by Agents that perform modifications within the mutable knowledge base field,
+        Used by Agents that perform modifications within the mutable knowledge base fields,
         to tell the database that it was modified and should get saved (as SQLalchemy
         can't detect changes in mutable fields by itself).
+
+        This creates a new knowledge base instance to maintain immutability of previous states,
+        similar to how specification modifications are handled.
         """
-        flag_modified(self, "knowledge_base")
+        # Create a new knowledge base instance with the current data
+        self.knowledge_base = self.knowledge_base.clone()
 
     def set_current_task_status(self, status: str):
         """
@@ -430,18 +491,47 @@ class ProjectState(Base):
 
     async def delete_after(self):
         """
-        Delete all states in the branch after this one.
+        Delete all states in the branch after this one, along with related data.
+
+        This includes:
+        - ProjectState records after this one
+        - Related UserInput records (including those for the current state)
+        - Related File records
+        - Orphaned FileContent records
+        - Orphaned KnowledgeBase records
+        - Orphaned Specification records
         """
+        from core.db.models import FileContent, KnowledgeBase, Specification, UserInput
 
         session: AsyncSession = inspect(self).async_session
 
         log.debug(f"Deleting all project states in branch {self.branch_id} after {self.id}")
-        await session.execute(
-            delete(ProjectState).where(
+
+        # Get all project states to be deleted
+        states_to_delete = await session.execute(
+            select(ProjectState).where(
                 ProjectState.branch_id == self.branch_id,
                 ProjectState.step_index > self.step_index,
             )
         )
+        states_to_delete = states_to_delete.scalars().all()
+        state_ids = [state.id for state in states_to_delete]
+
+        # Delete user inputs for the current state
+        await session.execute(delete(UserInput).where(UserInput.project_state_id == self.id))
+
+        if state_ids:
+            # Delete related user inputs for states to be deleted
+            await session.execute(delete(UserInput).where(UserInput.project_state_id.in_(state_ids)))
+
+            # Delete project states
+            await session.execute(delete(ProjectState).where(ProjectState.id.in_(state_ids)))
+
+        # Clean up orphaned records
+        await FileContent.delete_orphans(session)
+        await UserInput.delete_orphans(session)
+        await KnowledgeBase.delete_orphans(session)
+        await Specification.delete_orphans(session)
 
     def get_last_iteration_steps(self) -> list:
         """
@@ -486,6 +576,10 @@ class ProjectState(Base):
         """
         return self.epics and any(epic.get("source") == "frontend" for epic in self.epics)
 
+    # function that checks whether old project or new project is currently in frontend stage
+    def working_on_frontend(self) -> bool:
+        return self.has_frontend() and len(self.epics) == 1
+
     def is_feature(self) -> bool:
         """
         Check if the current epic is a feature.
@@ -493,3 +587,492 @@ class ProjectState(Base):
         :return: True if the current epic is a feature, False otherwise.
         """
         return self.epics and self.current_epic and self.current_epic.get("source") == "feature"
+
+    @staticmethod
+    async def get_state_for_redo_task(session: AsyncSession, project_state: "ProjectState") -> Optional["ProjectState"]:
+        states_result = await session.execute(
+            select(ProjectState).where(
+                and_(
+                    ProjectState.step_index <= project_state.step_index,
+                    ProjectState.branch_id == project_state.branch_id,
+                )
+            )
+        )
+
+        result = states_result.scalars().all()
+
+        result = sorted(result, key=lambda x: x.step_index, reverse=True)
+        for state in result:
+            if state.tasks:
+                for task in state.tasks:
+                    if task.get("id") == project_state.current_task.get("id") and task.get("instructions") is None:
+                        if task.get("status") == TaskStatus.TODO:
+                            return state
+
+        return None
+
+    @staticmethod
+    async def get_by_id(session: "AsyncSession", state_id: UUID) -> Optional["ProjectState"]:
+        """
+        Retrieve a project state by its ID.
+
+        :param session: The SQLAlchemy async session.
+        :param state_id: The UUID of the project state to retrieve.
+        :return: The ProjectState object if found, None otherwise.
+        """
+        if not state_id:
+            return None
+
+        query = select(ProjectState).where(ProjectState.id == state_id)
+        result = await session.execute(query)
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def get_all_epics_and_tasks(session: "AsyncSession", branch_id: UUID) -> list:
+        epics_and_tasks = []
+
+        try:
+            query = (
+                select(ProjectState)
+                .options(load_only(ProjectState.id, ProjectState.epics, ProjectState.tasks))
+                .where(and_(ProjectState.branch_id == branch_id, ProjectState.action.isnot(None)))
+            )
+
+            result = await session.execute(query)
+            project_states = result.scalars().all()
+
+            def has_epic(epic_type: str):
+                return any(epic1.get("source", "") == epic_type for epic1 in epics_and_tasks)
+
+            def find_epic_by_id(epic_id: str, sub_epic_id: str):
+                return next(
+                    (
+                        epic
+                        for epic in epics_and_tasks
+                        if epic.get("id", "") == epic_id and epic.get("sub_epic_id", "") == sub_epic_id
+                    ),
+                    None,
+                )
+
+            def find_task_in_epic(task_id: str, epic):
+                if not epic:
+                    return None
+                return next((task for task in epic.get("tasks", []) if task.get("id", "") == task_id), None)
+
+            for state in project_states:
+                epics, tasks = state.epics, state.tasks
+                epic = epics[-1]
+
+                if epics[-1] in ["spec_writer", "frontend"]:
+                    for epic in state.epics:
+                        if epic["source"] == "spec_writer" and not has_epic("spec_writer"):
+                            epics_and_tasks.insert(0, {"source": "spec_writer", "tasks": []})
+
+                        if epic["source"] == "frontend" and not has_epic("frontend"):
+                            epics_and_tasks.insert(1, {"source": "frontend", "tasks": []})
+
+                else:
+                    for sub_epic in epic.get("sub_epics", []):
+                        if not find_epic_by_id(epic["id"], sub_epic["id"]):
+                            epics_and_tasks.append(
+                                {
+                                    "id": epic["id"],
+                                    "sub_epic_id": sub_epic["id"],
+                                    "source": epic["source"],
+                                    "description": sub_epic.get("description", ""),
+                                    "tasks": [],
+                                }
+                            )
+
+                        for task in tasks:
+                            epic_in_list = find_epic_by_id(epic["id"], task.get("sub_epic_id"))
+                            if not epic_in_list:
+                                continue
+                            task_in_epic_list = find_task_in_epic(task["id"], epic_in_list)
+                            if not task_in_epic_list:
+                                epic_in_list["tasks"].append(
+                                    {
+                                        "id": task.get("id"),
+                                        "status": task.get("status"),
+                                        "description": task.get("description"),
+                                    }
+                                )
+                            else:
+                                # Update the status of the task if it already exists
+                                task_in_epic_list["status"] = task.get("status")
+
+        except Exception as e:
+            log.error(f"Error while getting epics and tasks: {e}")
+            return []
+
+        return epics_and_tasks
+
+    @staticmethod
+    async def get_project_states_in_between(
+        session: "AsyncSession", branch_id: UUID, start_id: UUID, end_id: UUID, limit: Optional[int] = 100
+    ):
+        query = select(ProjectState).where(
+            and_(
+                ProjectState.branch_id == branch_id,
+                ProjectState.id == start_id,
+            )
+        )
+        result = await session.execute(query)
+        start_state = result.scalars().one_or_none()
+
+        query = select(ProjectState).where(
+            and_(
+                ProjectState.branch_id == branch_id,
+                ProjectState.id == end_id,
+            )
+        )
+        result = await session.execute(query)
+        end_state = result.scalars().one_or_none()
+
+        if not start_state or not end_state:
+            log.error(f"Could not find states with IDs {start_id} and {end_id} in branch {branch_id}")
+            return []
+
+        query = (
+            select(ProjectState)
+            .where(
+                and_(
+                    ProjectState.branch_id == branch_id,
+                    ProjectState.step_index >= start_state.step_index,
+                    ProjectState.step_index <= end_state.step_index,
+                )
+            )
+            .order_by(ProjectState.step_index.desc())
+        )
+
+        if limit:
+            query = query.limit(limit)
+
+        result = await session.execute(query)
+        states = result.scalars().all()
+
+        # Since we always order by step_index desc, we need to reverse to get chronological order
+        return list(reversed(states))
+
+    @staticmethod
+    async def get_task_conversation_project_states(
+        session: "AsyncSession",
+        branch_id: UUID,
+        task_id: UUID,
+        first_last_only: bool = False,
+        limit: Optional[int] = 25,
+    ) -> Optional[list["ProjectState"]]:
+        """
+        Retrieve the conversation for the task in the project state.
+
+        :param session: The SQLAlchemy async session.
+        :param branch_id: The UUID of the branch.
+        :param task_id: The UUID of the task.
+        :param first_last_only: If True, return only first and last states.
+        :param limit: Maximum number of states to return (default 25).
+        :return: List of conversation messages if found, None otherwise.
+        """
+        log.debug(
+            f"Getting task conversation project states for task {task_id} in branch {branch_id} with first_last_only {first_last_only} and limit {limit}"
+        )
+        # First, we need to find the start and end step indices
+        # Use a more efficient query that only loads necessary fields
+        query = (
+            select(ProjectState)
+            .options(load_only(ProjectState.id, ProjectState.step_index, ProjectState.tasks, ProjectState.action))
+            .where(
+                and_(
+                    ProjectState.branch_id == branch_id,
+                    or_(ProjectState.action.like("%Task #%"), ProjectState.action.like("%Create a development plan%")),
+                )
+            )
+            .order_by(ProjectState.step_index)
+        )
+
+        result = await session.execute(query)
+        states = result.scalars().all()
+
+        log.debug(f"Found {len(states)} states with custom action")
+
+        start_step_index = None
+        end_step_index = None
+
+        # for the FIRST task, it is todo in the same state as Create a development plan, while other tasks are "Task #N start" (action)
+
+        # this is done solely to be able to reload to the first task, due to the fact that we need the same project_state_id for the send_back_logs
+        # for the first task, we need to start from the FIRST state that has that task in TODO status
+        # for all other tasks, we need to start from LAST state that has that task in TODO status
+        for state in states:
+            for task in state.tasks:
+                if UUID(task["id"]) == task_id and task.get("status", "") == TaskStatus.TODO:
+                    if UUID(task["id"]) == UUID(state.tasks[0]["id"]):
+                        # First task: set start only once (first occurrence)
+                        if start_step_index is None:
+                            start_step_index = state.step_index
+                    else:
+                        # Other tasks: update start every time (last occurrence)
+                        start_step_index = state.step_index
+
+                if UUID(task["id"]) == task_id and task.get("status", "") in [
+                    TaskStatus.SKIPPED,
+                    TaskStatus.DOCUMENTED,
+                    TaskStatus.REVIEWED,
+                    TaskStatus.DONE,
+                ]:
+                    end_step_index = state.step_index
+
+        if start_step_index is None:
+            return []
+
+        # Now build the optimized query based on what we need
+        if first_last_only:
+            # For first_last_only, we only need the first and last states
+            # Get first state
+            first_query = (
+                select(ProjectState)
+                .where(
+                    and_(
+                        ProjectState.branch_id == branch_id,
+                        ProjectState.step_index >= start_step_index,
+                        ProjectState.step_index < end_step_index if end_step_index else True,
+                    )
+                )
+                .order_by(ProjectState.step_index.asc())
+                .limit(1)
+            )
+
+            # Get last state (excluding the uncommitted one)
+            last_query = (
+                select(ProjectState)
+                .where(
+                    and_(
+                        ProjectState.branch_id == branch_id,
+                        ProjectState.step_index >= start_step_index,
+                        ProjectState.step_index < end_step_index if end_step_index else True,
+                    )
+                )
+                .order_by(ProjectState.step_index.desc())
+                .limit(2)
+            )  # Get last 2 to exclude uncommitted
+
+            first_result = await session.execute(first_query)
+            last_result = await session.execute(last_query)
+
+            first_state = first_result.scalars().first()
+            last_states = last_result.scalars().all()
+
+            # Remove the last state (uncommitted) and get the actual last
+            if len(last_states) > 1:
+                last_state = last_states[1]  # Second to last is the actual last committed
+            else:
+                last_state = first_state  # Only one state
+
+            if first_state and last_state and first_state.id != last_state.id:
+                return [first_state, last_state]
+            elif first_state:
+                return [first_state]
+            else:
+                return []
+
+        else:
+            # For regular queries, apply limit at the database level
+            query = (
+                select(ProjectState)
+                .where(
+                    and_(
+                        ProjectState.branch_id == branch_id,
+                        ProjectState.step_index >= start_step_index,
+                        ProjectState.step_index < end_step_index if end_step_index else True,
+                    )
+                )
+                .order_by(ProjectState.step_index.asc())
+            )
+
+            if limit:
+                # Apply limit + 1 to account for removing the last uncommitted state
+                query = query.limit(limit + 1)
+
+            result = await session.execute(query)
+            results = result.scalars().all()
+
+            log.debug(f"Found {len(results)} states with custom action")
+            # Remove the last state from the list because that state is not yet committed in the database!
+            if results:
+                results = results[:-1]
+
+            return results
+
+    @staticmethod
+    async def get_fe_states(
+        session: "AsyncSession", branch_id: UUID, limit: Optional[int] = None
+    ) -> Optional["ProjectState"]:
+        query = select(ProjectState).where(
+            and_(
+                ProjectState.branch_id == branch_id,
+                ProjectState.action == FE_START,
+            )
+        )
+        result = await session.execute(query)
+        fe_start = result.scalars().one_or_none()
+
+        if not fe_start:
+            return []
+
+        query = (
+            select(ProjectState)
+            .where(
+                and_(
+                    ProjectState.branch_id == branch_id,
+                    ProjectState.step_index >= fe_start.step_index,
+                    ProjectState.action.like("%Frontend%"),
+                )
+            )
+            .order_by(ProjectState.step_index.desc())
+            .limit(1)
+        )
+        result = await session.execute(query)
+        fe_end = result.scalars().one_or_none()
+
+        query = (
+            select(ProjectState)
+            .where(
+                and_(
+                    ProjectState.branch_id == branch_id,
+                    ProjectState.step_index >= fe_start.step_index,
+                    ProjectState.step_index <= fe_end.step_index,
+                )
+            )
+            .order_by(ProjectState.step_index.desc())
+        )
+
+        if limit:
+            query = query.limit(limit)
+
+        results = await session.execute(query)
+        states = results.scalars().all()
+
+        # Since we ordered by step_index desc and limited, we need to reverse to get chronological order
+        return list(reversed(states))
+
+    @staticmethod
+    def get_epic_task_number(state, current_task) -> (int, int):
+        epic_num = -1
+        task_num = -1
+
+        for task in state.tasks:
+            epic_n = task.get("sub_epic_id", 1) + 2
+            if epic_n != epic_num:
+                epic_num = epic_n
+                task_num = 1
+
+            if current_task["id"] == task["id"]:
+                return epic_num, task_num
+
+            task_num += 1
+
+        return epic_num, task_num
+
+    @staticmethod
+    async def get_be_back_logs(session: "AsyncSession", branch_id: UUID) -> (list[dict], dict, list["ProjectState"]):
+        """
+        For each FINISHED task in the branch, find all project states where the task status changes. Additionally, the last task that will be returned is the one that is currently being worked on.
+        Returns data formatted for the UI + the project states for history convo.
+
+        :param session: The SQLAlchemy async session.
+        :param branch_id: The UUID of the branch.
+        :return: List of dicts with UI-friendly task conversation format.
+        """
+        query = select(ProjectState).where(
+            and_(
+                ProjectState.branch_id == branch_id,
+                or_(ProjectState.action.like("%Task #%"), ProjectState.action.like("%Create a development plan%")),
+            )
+        )
+        result = await session.execute(query)
+        states = result.scalars().all()
+
+        log.debug(f"Found {len(states)} states in branch")
+
+        if not states:
+            query = select(ProjectState).where(ProjectState.branch_id == branch_id)
+            result = await session.execute(query)
+            states = result.scalars().all()
+
+        task_histories = []
+
+        def find_task_history(task_id):
+            for th in task_histories:
+                if th["task_id"] == task_id:
+                    return th
+            return None
+
+        for state in states:
+            for task in state.tasks or []:
+                task_id = task.get("id")
+                if not task_id:
+                    continue
+
+                th = find_task_history(task_id)
+                if not th:
+                    th = {
+                        "task_id": task_id,
+                        "title": task.get("description"),
+                        "labels": [],
+                        "status": task["status"],
+                        "start_id": state.id,
+                        "project_state_id": state.id,
+                        "end_id": state.id,
+                    }
+                    task_histories.append(th)
+
+                if task.get("status") == TaskStatus.TODO:
+                    th["status"] = TaskStatus.TODO
+                    th["start_id"] = state.id
+                    th["project_state_id"] = state.id
+                    th["end_id"] = state.id
+
+                elif task.get("status") != th["status"]:
+                    th["status"] = task.get("status")
+                    th["end_id"] = state.id
+
+                epic_index, task_index = ProjectState.get_epic_task_number(state, task)
+                th["labels"] = [
+                    f"E{str(epic_index)} / T{task_index}",
+                    "Backend",
+                    "Working"
+                    if task.get("status") in [TaskStatus.TODO, TaskStatus.IN_PROGRESS]
+                    else "Skipped"
+                    if task.get("status") == TaskStatus.SKIPPED
+                    else "Done",
+                ]
+
+        last_task = {}
+
+        # todo/in_progress can override done
+        # done can override todo/in_progress
+        # todo/in_progress can not override todo/in_progress
+
+        for th in task_histories:
+            if not last_task:
+                last_task = th
+
+            # if we have multiple tasks being Worked on (todo state) in a row, then we take the first one
+            # if we see a Done task, we take that one
+            if not (
+                last_task["status"] in [TaskStatus.TODO, TaskStatus.IN_PROGRESS]
+                and th["status"] in [TaskStatus.TODO, TaskStatus.IN_PROGRESS]
+            ):
+                last_task = th
+
+        if task_histories and last_task:
+            task_histories = task_histories[: task_histories.index(last_task) + 1]
+
+        if last_task:
+            project_states = await ProjectState.get_task_conversation_project_states(
+                session, branch_id, UUID(last_task["task_id"])
+            )
+            if project_states:
+                last_task["start_id"] = project_states[0].id
+                last_task["project_state_id"] = project_states[0].id
+                last_task["end_id"] = project_states[-1].id
+        return task_histories, last_task

@@ -1,0 +1,6 @@
+Decide if the user wants to use authentication (login and register) for the app with the following description:
+```text
+{{description}}
+```
+Reply with Yes or No only (without quotation marks), and no additional text or explanation.
+If the description does not provide enough information to make a decision, reply with Yes.

@@ -7,7 +7,7 @@ import pytest
 
 from core.cli.helpers import (
     init,
-    list_projects,
+    list_projects_branches_states,
     list_projects_json,
     load_config,
     load_project,
@@ -44,6 +44,9 @@ def test_parse_arguments(mock_ArgumentParser):
         "--database",
         "--local-ipc-port",
         "--local-ipc-host",
+        "--enable-api-server",
+        "--local-api-server-host",
+        "--local-api-server-port",
         "--version",
         "--list",
         "--list-json",
@@ -51,13 +54,16 @@ def test_parse_arguments(mock_ArgumentParser):
         "--delete",
         "--branch",
         "--step",
+        "--project-state-id",
         "--llm-endpoint",
         "--llm-key",
         "--import-v0",
         "--email",
         "--extension-version",
-        "--no-check",
         "--use-git",
+        "--access-token",
+        "--no-auto-confirm-breakdown",
+        "--initial-prompt",
     }
 
     parser.parse_args.assert_called_once_with()
@@ -167,46 +173,29 @@ def test_show_default_config(capsys):
 async def test_list_projects_json(mock_StateManager, capsys):
     sm = mock_StateManager.return_value
 
-    branch = MagicMock(
-        id=MagicMock(hex="1234"),
-        states=[
-            MagicMock(step_index=1, action="foo", created_at=datetime(2021, 1, 1)),
-            MagicMock(step_index=2, action=None, created_at=datetime(2021, 1, 2)),
-            MagicMock(step_index=3, action="baz", created_at=datetime(2021, 1, 3)),
-        ],
-    )
-    branch.name = "branch1"
+    project_id1 = MagicMock(hex="abcd")
+    project_id2 = MagicMock(hex="efgh")
 
-    project = MagicMock(
-        id=MagicMock(hex="abcd"),
-        branches=[branch],
-    )
-    project.name = "project1"
-    sm.list_projects = AsyncMock(return_value=[project])
+    created_at1 = datetime(2021, 1, 1)
+    created_at2 = datetime(2021, 1, 2)
+
+    projects_data = [
+        (project_id1, "project1", created_at1, "folder1"),
+        (project_id2, "project2", created_at2, "folder2"),
+    ]
+
+    sm.list_projects = AsyncMock(return_value=projects_data)
     await list_projects_json(None)
 
     mock_StateManager.assert_called_once_with(None)
     sm.list_projects.assert_awaited_once_with()
 
-    data = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr().out
+    data = json.loads(captured)
 
     assert data == [
-        {
-            "name": "project1",
-            "id": "abcd",
-            "updated_at": "2021-01-03T00:00:00",
-            "branches": [
-                {
-                    "name": "branch1",
-                    "id": "1234",
-                    "steps": [
-                        {"step": 1, "name": "foo"},
-                        {"step": 2, "name": "Step #2"},
-                        {"step": 3, "name": "Latest step"},
-                    ],
-                },
-            ],
-        },
+        {"id": "abcd", "name": "project1", "folder_name": "folder1", "updated_at": "2021-01-01T00:00:00"},
+        {"id": "efgh", "name": "project2", "folder_name": "folder2", "updated_at": "2021-01-02T00:00:00"},
     ]
 
 
@@ -226,14 +215,16 @@ async def test_list_projects(mock_StateManager, capsys):
 
     project = MagicMock(
         id="abcd",
+        project_type="node",
         branches=[branch],
     )
     project.name = "project1"
-    sm.list_projects = AsyncMock(return_value=[project])
-    await list_projects(None)
+
+    sm.list_projects_with_branches_states = AsyncMock(return_value=[project])
+    await list_projects_branches_states(None)
 
     mock_StateManager.assert_called_once_with(None)
-    sm.list_projects.assert_awaited_once_with()
+    sm.list_projects_with_branches_states.assert_awaited_once_with()
 
     data = capsys.readouterr().out
 
@@ -243,27 +234,36 @@ async def test_list_projects(mock_StateManager, capsys):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("args", "kwargs", "retval"),
+    ("args", "kwargs", "retval", "should_succeed"),
     [
-        (["abc", None, None], dict(project_id="abc", step_index=None), True),
-        (["abc", None, None], dict(project_id="abc", step_index=None), False),
-        (["abc", "def", None], dict(branch_id="def", step_index=None), True),
-        (["abc", "def", None], dict(branch_id="def", step_index=None), False),
-        (["abc", None, 123], dict(project_id="abc", step_index=123), True),
-        (["abc", "def", 123], dict(branch_id="def", step_index=123), False),
+        (["abc", None, None, None], dict(project_id="abc", step_index=None, project_state_id=None), MagicMock(), True),
+        (["abc", None, None, None], dict(project_id="abc", step_index=None, project_state_id=None), None, False),
+        (["abc", "def", None, None], dict(branch_id="def", step_index=None, project_state_id=None), MagicMock(), True),
+        (["abc", "def", None, None], dict(branch_id="def", step_index=None, project_state_id=None), None, False),
+        (["abc", None, 123, None], dict(project_id="abc", step_index=123, project_state_id=None), MagicMock(), True),
+        (["abc", "def", 123, None], dict(branch_id="def", step_index=123, project_state_id=None), None, False),
+        (
+            ["abc", None, None, "xyz"],
+            dict(project_id="abc", step_index=None, project_state_id="xyz"),
+            MagicMock(),
+            True,
+        ),
+        (["abc", "def", None, "xyz"], dict(branch_id="def", step_index=None, project_state_id="xyz"), None, False),
     ],
 )
-async def test_load_project(args, kwargs, retval, capsys):
+async def test_load_project(args, kwargs, retval, should_succeed, capsys):
     sm = MagicMock(load_project=AsyncMock(return_value=retval))
 
-    success = await load_project(sm, *args)
+    result = await load_project(sm, *args)
 
-    assert success is retval
-    sm.load_project.assert_awaited_once_with(**kwargs)
-
-    if not success:
+    if should_succeed:
+        assert result is not None
+    else:
+        assert result is None
         data = capsys.readouterr().err
         assert "not found" in data
+
+    sm.load_project.assert_awaited_once_with(**kwargs)
 
 
 def test_init(tmp_path):
@@ -290,13 +290,12 @@ def test_init(tmp_path):
         (["--project", "ca7a0cc9-767f-472a-aefb-0c8d3377c9bc"], False, False),
         (["--branch", "ca7a0cc9-767f-472a-aefb-0c8d3377c9bc"], False, False),
         (["--step", "123"], False, False),
+        (["--project-state", "ca7a0cc9-767f-472a-aefb-0c8d3377c9bc"], False, False),
         ([], True, True),
     ],
 )
-@patch("core.cli.main.llm_api_check")
 @patch("core.cli.main.Orchestrator")
-async def test_main(mock_Orchestrator, mock_llm_check, args, run_orchestrator, retval, tmp_path):
-    mock_llm_check.return_value = True
+async def test_main(mock_Orchestrator, args, run_orchestrator, retval, tmp_path):
     config_file = write_test_config(tmp_path)
 
     class MockArgumentParser(ArgumentParser):
@@ -306,7 +305,14 @@ async def test_main(mock_Orchestrator, mock_llm_check, args, run_orchestrator, r
     with patch("core.cli.helpers.ArgumentParser", new=MockArgumentParser):
         ui, db, args = init()
 
-    ui.ask_question = AsyncMock(return_value=MagicMock(text="test", cancelled=False))
+    # Create a mock with a string value for the button attribute
+    mock_response = MagicMock()
+    mock_response.text = "test"
+    mock_response.cancelled = False
+    # Set a string value for the button attribute
+    mock_response.button = "node"  # or whatever valid project type you want to use
+
+    ui.ask_question = AsyncMock(return_value=mock_response)
 
     mock_orca = mock_Orchestrator.return_value
     mock_orca.run = AsyncMock(return_value=True)
@@ -315,16 +321,14 @@ async def test_main(mock_Orchestrator, mock_llm_check, args, run_orchestrator, r
     assert success is retval
 
     if run_orchestrator:
-        assert ui.ask_question.call_count == 2
+        assert ui.ask_question.call_count == 1
         mock_Orchestrator.assert_called_once()
         mock_orca.run.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
-@patch("core.cli.main.llm_api_check")
 @patch("core.cli.main.Orchestrator")
-async def test_main_handles_crash(mock_Orchestrator, mock_llm_check, tmp_path):
-    mock_llm_check.return_value = True
+async def test_main_handles_crash(mock_Orchestrator, tmp_path):
     config_file = write_test_config(tmp_path)
 
     class MockArgumentParser(ArgumentParser):
@@ -334,8 +338,11 @@ async def test_main_handles_crash(mock_Orchestrator, mock_llm_check, tmp_path):
     with patch("core.cli.helpers.ArgumentParser", new=MockArgumentParser):
         ui, db, args = init()
 
-    ui.ask_question = AsyncMock(return_value=MagicMock(text="test", cancelled=False))
-    ui.send_message = AsyncMock()
+    # Create a mock response with a string value for the button attribute
+    mock_response = MagicMock(text="test", cancelled=False)
+    mock_response.button = "test_project_type"  # Set a string value for project_type
+    ui.ask_question = AsyncMock(return_value=mock_response)
+    ui.send_fatal_error = AsyncMock()
 
     mock_orca = mock_Orchestrator.return_value
     mock_orca.run = AsyncMock(side_effect=RuntimeError("test error"))
@@ -343,5 +350,5 @@ async def test_main_handles_crash(mock_Orchestrator, mock_llm_check, tmp_path):
     success = await async_main(ui, db, args)
 
     assert success is False
-    ui.send_message.assert_called_once()
-    assert "test error" in ui.send_message.call_args[0][0]
+    ui.send_fatal_error.assert_called_once()
+    assert "test error" in ui.send_fatal_error.call_args[0][0]

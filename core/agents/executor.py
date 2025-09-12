@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from core.agents.base import BaseAgent
 from core.agents.convo import AgentConvo
 from core.agents.response import AgentResponse
+from core.config.actions import EX_RUN_COMMAND, EX_SKIP_COMMAND, RUN_COMMAND
 from core.llm.parser import JSONParser
 from core.log import get_logger
 from core.proc.exec_log import ExecLog
@@ -78,9 +79,9 @@ class Executor(BaseAgent):
         timeout = options.get("timeout")
 
         if timeout:
-            q = f"Can I run command: {cmd} with {timeout}s timeout?"
+            q = f"{RUN_COMMAND} {cmd} with {timeout}s timeout?"
         else:
-            q = f"Can I run command: {cmd}?"
+            q = f"{RUN_COMMAND} {cmd}?"
 
         confirm = await self.ask_question(
             q,
@@ -88,13 +89,13 @@ class Executor(BaseAgent):
             default="yes",
             buttons_only=False,
             initial_text=cmd,
-            extra_info="remove_button_yes",
+            extra_info={"remove_button": "yes"},
         )
         if confirm.button == "no":
             log.info(f"Skipping command execution of `{cmd}` (requested by user)")
             await self.send_message(f"Skipping command {cmd}")
             self.complete()
-            self.next_state.action = f'Skip "{cmd_name}"'
+            self.next_state.action = EX_SKIP_COMMAND.format(cmd_name)
             return AgentResponse.done(self)
 
         if confirm.button != "yes":
@@ -110,7 +111,7 @@ class Executor(BaseAgent):
         duration = (datetime.now(timezone.utc) - started_at).total_seconds()
 
         self.complete()
-        self.next_state.action = f'Run "{cmd_name}"'
+        self.next_state.action = EX_RUN_COMMAND.format(cmd_name)
 
         exec_log = ExecLog(
             started_at=started_at,

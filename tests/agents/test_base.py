@@ -34,7 +34,7 @@ async def test_stream_handler():
 
     await agent.stream_handler("chunk")
     ui.send_stream_chunk.assert_called_once_with(
-        "chunk", source=agent.ui_source, project_state_id=str(agent.current_state.id)
+        "chunk", source=agent.ui_source, project_state_id=str(agent.current_state.id), route=None
     )
 
 

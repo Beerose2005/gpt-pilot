@@ -1,12 +1,16 @@
+import asyncio
 import json
-from difflib import unified_diff
-from typing import List, Optional, Union
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
 from core.agents.convo import AgentConvo
 from core.agents.response import AgentResponse
+from core.cli.helpers import get_line_changes
 from core.config import GET_RELEVANT_FILES_AGENT_NAME, TASK_BREAKDOWN_AGENT_NAME, TROUBLESHOOTER_BUG_REPORT
+from core.config.actions import MIX_BREAKDOWN_CHAT_PROMPT
+from core.config.constants import CONVO_ITERATIONS_LIMIT
+from core.config.magic_words import ALWAYS_RELEVANT_FILES
 from core.llm.parser import JSONParser
 from core.log import get_logger
 from core.ui.base import ProjectStage
@@ -14,30 +18,10 @@ from core.ui.base import ProjectStage
 log = get_logger(__name__)
 
 
-class ReadFilesAction(BaseModel):
-    read_files: Optional[List[str]] = Field(
-        description="List of files you want to read. All listed files must be in the project."
-    )
-
-
-class AddFilesAction(BaseModel):
-    add_files: Optional[List[str]] = Field(
-        description="List of files you want to add to the list of relevant files. All listed files must be in the project. You must read files before adding them."
-    )
-
-
-class RemoveFilesAction(BaseModel):
-    remove_files: Optional[List[str]] = Field(
-        description="List of files you want to remove from the list of relevant files. All listed files must be in the relevant files list."
-    )
-
-
-class DoneBooleanAction(BaseModel):
-    done: Optional[bool] = Field(description="Boolean flag to indicate that you are done creating breakdown.")
-
-
 class RelevantFiles(BaseModel):
-    action: Union[ReadFilesAction, AddFilesAction, RemoveFilesAction, DoneBooleanAction]
+    relevant_files: Optional[List[str]] = Field(
+        description="List of files you want to add to the list of relevant files."
+    )
 
 
 class Test(BaseModel):
@@ -73,8 +57,11 @@ class ChatWithBreakdownMixin:
                 }
             )
 
+            if self.state_manager.auto_confirm_breakdown:
+                break
+
             chat = await self.ask_question(
-                "Are you happy with the breakdown? Now is a good time to ask questions or suggest changes.",
+                MIX_BREAKDOWN_CHAT_PROMPT,
                 buttons={"yes": "Yes, looks good!"},
                 default="yes",
                 verbose=False,
@@ -82,8 +69,8 @@ class ChatWithBreakdownMixin:
             if chat.button == "yes":
                 break
 
-            if len(convo.messages) > 11:
-                convo.trim(3, 2)
+            if len(convo.messages) > CONVO_ITERATIONS_LIMIT:
+                convo.slice(3, CONVO_ITERATIONS_LIMIT)
 
             convo.user(chat.text)
             breakdown: str = await llm(convo)
@@ -123,7 +110,7 @@ class IterationPromptMixin:
             user_feedback_qa=user_feedback_qa,
             next_solution_to_try=next_solution_to_try,
             bug_hunting_cycles=bug_hunting_cycles,
-            test_instructions=json.loads(self.current_state.current_task.get("test_instructions") or "[]"),
+            test_instructions=json.loads(self.current_state.current_task.get("test_instructions", "[]")),
         )
         llm_solution: str = await llm(convo)
 
@@ -134,14 +121,44 @@ class IterationPromptMixin:
 
 class RelevantFilesMixin:
     """
-    Provides a method to get relevant files for the current task.
+    Asynchronously retrieves relevant files for the current task by separating front-end and back-end files, and processing them in parallel.
+
+    This method initiates two asynchronous tasks to fetch relevant files for the front-end (client) and back-end (server) respectively.
+    It then combines the results, filters out any non-existing files, and updates the current and next state with the relevant files.
     """
 
-    async def get_relevant_files(
+    async def get_relevant_files_parallel(
         self, user_feedback: Optional[str] = None, solution_description: Optional[str] = None
     ) -> AgentResponse:
-        log.debug("Getting relevant files for the current task")
-        done = False
+        tasks = [
+            self.get_relevant_files(
+                user_feedback=user_feedback, solution_description=solution_description, dir_type="client"
+            ),
+            self.get_relevant_files(
+                user_feedback=user_feedback, solution_description=solution_description, dir_type="server"
+            ),
+        ]
+
+        responses = await asyncio.gather(*tasks)
+
+        relevant_files = [item for sublist in responses for item in sublist]
+
+        existing_files = {file.path for file in self.current_state.files}
+        relevant_files = [path for path in relevant_files if path in existing_files]
+        self.current_state.relevant_files = relevant_files
+        self.next_state.relevant_files = relevant_files
+
+        return AgentResponse.done(self)
+
+    async def get_relevant_files(
+        self,
+        user_feedback: Optional[str] = None,
+        solution_description: Optional[str] = None,
+        dir_type: Optional[str] = None,
+    ) -> list[str]:
+        log.debug(
+            "Getting relevant files for the current task for: " + ("frontend" if dir_type == "client" else "backend")
+        )
         relevant_files = set()
         llm = self.get_llm(GET_RELEVANT_FILES_AGENT_NAME)
         convo = (
@@ -151,44 +168,24 @@ class RelevantFilesMixin:
                 user_feedback=user_feedback,
                 solution_description=solution_description,
                 relevant_files=relevant_files,
+                dir_type=dir_type,
             )
             .require_schema(RelevantFiles)
         )
-
-        while not done and len(convo.messages) < 23:
-            llm_response: RelevantFiles = await llm(convo, parser=JSONParser(RelevantFiles), temperature=0)
-            action = llm_response.action
-            if action is None:
-                convo.remove_last_x_messages(2)
-                continue
-
-            # Check if there are files to add to the list
-            if getattr(action, "add_files", None):
-                # Add only the files from add_files that are not already in relevant_files
-                relevant_files.update(file for file in action.add_files if file not in relevant_files)
-
-            # Check if there are files to remove from the list
-            if getattr(action, "remove_files", None):
-                # Remove files from relevant_files that are in remove_files
-                relevant_files.difference_update(action.remove_files)
-
-            read_files = [
-                file for file in self.current_state.files if file.path in (getattr(action, "read_files", []) or [])
-            ]
-
-            convo.remove_last_x_messages(1)
-            convo.assistant(llm_response.original_response)
-            convo.template("filter_files_loop", read_files=read_files, relevant_files=relevant_files).require_schema(
-                RelevantFiles
-            )
-            done = getattr(action, "done", False)
-
+        llm_response: RelevantFiles = await llm(convo, parser=JSONParser(RelevantFiles), temperature=0)
         existing_files = {file.path for file in self.current_state.files}
-        relevant_files = [path for path in relevant_files if path in existing_files]
-        self.current_state.relevant_files = relevant_files
-        self.next_state.relevant_files = relevant_files
+        if not llm_response.relevant_files:
+            return []
+        paths_list = [path for path in llm_response.relevant_files if path in existing_files]
 
-        return AgentResponse.done(self)
+        try:
+            for file_path in ALWAYS_RELEVANT_FILES:
+                if file_path not in paths_list and file_path in existing_files:
+                    paths_list.append(file_path)
+        except Exception as e:
+            log.error(f"Error while getting most important files: {e}")
+
+        return paths_list
 
 
 class FileDiffMixin:
@@ -205,21 +202,7 @@ class FileDiffMixin:
 
         :param old_content: old file content
         :param new_content: new file content
-        :return: a tuple (added_lines, deleted_lines)
+        :return: a tuple (n_new_lines, n_del_lines)
         """
 
-        from_lines = old_content.splitlines(keepends=True)
-        to_lines = new_content.splitlines(keepends=True)
-
-        diff_gen = unified_diff(from_lines, to_lines)
-
-        added_lines = 0
-        deleted_lines = 0
-
-        for line in diff_gen:
-            if line.startswith("+") and not line.startswith("+++"):  # Exclude the file headers
-                added_lines += 1
-            elif line.startswith("-") and not line.startswith("---"):  # Exclude the file headers
-                deleted_lines += 1
-
-        return added_lines, deleted_lines
+        return get_line_changes(old_content, new_content)

@@ -1,4 +1,4 @@
-{% if state.epics|length > 3 %}
+{% if state.epics|length > 3 and state.current_task and state.current_task.quick_implementation is not defined %}
 
 Here is the list of features that were previously implemented on top of initial high level description of "{{ state.branch.project.name }}":
 ```
@@ -7,7 +7,7 @@ Here is the list of features that were previously implemented on top of initial 
 {% endfor %}
 ```
 {% endif %}
-{% if state.epics|length > 2 %}
+{% if state.epics|length > 2 and state.current_task and state.current_task.quick_implementation is not defined %}
 
 Here is the feature that you are implementing right now:
 ```

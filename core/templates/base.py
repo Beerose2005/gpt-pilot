@@ -1,3 +1,4 @@
+import asyncio
 from json import loads
 from os.path import dirname, join
 from typing import TYPE_CHECKING, Any, Optional, Type
@@ -89,7 +90,7 @@ class BaseProjectTemplate:
         state = self.state_manager.current_state
         project_name = state.branch.project.name
         project_folder = state.branch.project.folder_name
-        project_description = state.specification.description
+        project_description = self.state_manager.current_state.specification.description
 
         log.info(f"Applying project template {self.name} with options: {self.options_dict}")
 
@@ -116,6 +117,10 @@ class BaseProjectTemplate:
                 from_template=True,
             )
 
+        self.state_manager.async_tasks.append(asyncio.create_task(self.install_hook_template()))
+        return self.get_summary()
+
+    async def install_hook_template(self) -> Any:
         try:
             await self.install_hook()
         except Exception as err:
@@ -124,6 +129,7 @@ class BaseProjectTemplate:
                 exc_info=True,
             )
 
+    def get_summary(self):
         return self.info_renderer.render_template(
             join(self.path, "summary.tpl"),
             {

@@ -12,7 +12,10 @@ The current task has been split into multiple steps, and each step is one of the
 
 Here is the list of all steps in in this task (steps that were already completed are marked as COMPLETED, future steps that will be executed once debugging is done are marked as FUTURE, and the current step is marked as CURRENT STEP):
 {% for step in task_steps %}
-* {% if loop.index0 < step_index %}(COMPLETED){% elif loop.index0 > step_index %}(FUTURE){% else %}(**CURRENT STEP**){% endif %} {{ step.type }}: `{% if step.type == 'command' %}{{ step.command.command }}{% elif step.type == 'save_file' %}{{ step.save_file.path }}{% endif %}`
+* {% if loop.index0 < step_index %}(COMPLETED){% elif loop.index0 > step_index %}(FUTURE){% else %}(**CURRENT STEP**){% endif %}
+  {% if step.get('type') %}
+    {{ step.type }}: `{% if step.type == 'command' %}{{ step.command.command }}{% elif step.type == 'save_file' %}{{ step.save_file.path }}{% endif %}`
+  {% endif %}
 {% endfor %}
 
 When trying to see if command was ran successfully, take into consideration steps that were previously executed and steps that will be executed after the current step. It can happen that command seems like it failed but it will be fixed with next steps. In that case you should consider that command to be successfully executed.

@@ -69,3 +69,20 @@ class Specification(Base):
         await session.execute(
             delete(Specification).where(~Specification.id.in_(select(distinct(ProjectState.specification_id))))
         )
+
+    @staticmethod
+    async def update_specification(session: AsyncSession, specification: "Specification") -> Optional["Specification"]:
+        """
+        Update the specification in the database.
+
+        :param session: The database session.
+        :param specification: The Specification object to update.
+        :return: The updated Specification object or None if not found.
+        """
+        existing_spec = await session.get(Specification, specification.id)
+        if existing_spec:
+            for key, value in specification.__dict__.items():
+                setattr(existing_spec, key, value)
+            await session.commit()
+            return existing_spec
+        return None

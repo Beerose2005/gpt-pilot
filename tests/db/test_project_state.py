@@ -20,7 +20,7 @@ async def test_get_by_id(testdb):
 
 @pytest.mark.asyncio
 async def test_get_last_state_no_session():
-    project = Project(name="test")
+    project = Project(name="test", project_type="node")
     branch = Branch(project=project)
 
     with pytest.raises(ValueError):

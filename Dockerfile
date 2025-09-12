@@ -1,71 +1,21 @@
 # Use Ubuntu 22.04 as the base image with multi-arch support
 FROM ubuntu:22.04
 
-# Set environment to prevent interactive prompts during builds
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
-
 # Use buildx args for multi-arch support
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 
-# Update package list and install prerequisites
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    software-properties-common \
-    build-essential \
-    curl \
-    git \
-    gnupg \
-    tzdata \
-    openssh-server \
-    inotify-tools \
-    vim \
-    nano \
-    && rm -rf /var/lib/apt/lists/*
+# Set defaults for TARGETPLATFORM to ensure it's available in scripts
+ENV TARGETPLATFORM=${TARGETPLATFORM:-linux/amd64}
 
-# Add deadsnakes PPA for Python 3.12 and install Python
-RUN add-apt-repository ppa:deadsnakes/ppa -y && apt-get update && \
-    apt-get install -y --no-install-recommends \
-    python3.12 \
-    python3.12-venv \
-    python3.12-dev \
-    python3-pip \
-    && rm -rf /var/lib/apt/lists/*
+# Copy VSIX file first
+COPY pythagora-vs-code.vsix /var/init_data/pythagora-vs-code.vsix
 
-
-# Set Python 3.12 as the default python3 and python
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 && \
-    update-alternatives --install /usr/bin/python python /usr/bin/python3 1 && \
-    python --version
-
-RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - && \
-    apt-get install -y nodejs && \
-    node --version && npm --version
-
-# MongoDB installation with platform-specific approach
-RUN case "$TARGETPLATFORM" in \
-    "linux/amd64") \
-    curl -fsSL https://www.mongodb.org/static/pgp/server-6.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-archive-keyring.gpg && \
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/mongodb-archive-keyring.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/6.0 multiverse" | tee /etc/apt/sources.list.d/mongodb-org-6.0.list && \
-    apt-get update && apt-get install -y mongodb-org \
-    ;; \
-    "linux/arm64"|"linux/arm64/v8") \
-    curl -fsSL https://www.mongodb.org/static/pgp/server-6.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-archive-keyring.gpg && \
-    echo "deb [arch=arm64 signed-by=/usr/share/keyrings/mongodb-archive-keyring.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/6.0 multiverse" | tee /etc/apt/sources.list.d/mongodb-org-6.0.list && \
-    apt-get update && apt-get install -y mongodb-org \
-    ;; \
-    *) \
-    echo "Unsupported platform: $TARGETPLATFORM" && exit 1 \
-    ;; \
-    esac \
-    && rm -rf /var/lib/apt/lists/*
-
-# Configure SSH
-RUN mkdir -p /run/sshd \
-    && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config \
-    && sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config \
-    && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config \
-    && sed -i 's/#ChallengeResponseAuthentication yes/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+# Install all dependencies
+COPY cloud/setup-dependencies.sh /tmp/setup-dependencies.sh
+RUN chmod +x /tmp/setup-dependencies.sh && \
+    /tmp/setup-dependencies.sh && \
+    rm /tmp/setup-dependencies.sh
 
 ENV PYTH_INSTALL_DIR=/pythagora
 
@@ -83,7 +33,8 @@ RUN python3 -m venv venv && \
 # Copy application files
 ADD main.py .
 ADD core core
-ADD config-docker.json config.json
+ADD pyproject.toml .
+ADD cloud/config-docker.json config.json
 
 # Set the virtual environment to be automatically activated
 ENV VIRTUAL_ENV=${PYTH_INSTALL_DIR}/pythagora-core/venv
@@ -93,76 +44,56 @@ ENV PYTHAGORA_DATA_DIR=${PYTH_INSTALL_DIR}/pythagora-core/data/
 RUN mkdir -p data
 
 # Expose MongoDB and application ports
-EXPOSE 27017 8000
+EXPOSE 27017 8000 8080 5173 3000
 
-# Create a group named "devusergroup" with a specific GID (1000, optional)
-RUN groupadd -g 1000 devusergroup
+# Create a group and user
+RUN groupadd -g 1000 devusergroup && \
+    useradd -m -u 1000 -g devusergroup -s /bin/bash devuser && \
+    echo "devuser:devuser" | chpasswd && \
+    adduser devuser sudo && \
+    echo "devuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-ARG USERNAME=devuser
+# Set up entrypoint and VS Code extension
+ADD cloud/entrypoint.sh /entrypoint.sh
+ADD cloud/on-event-extension-install.sh /var/init_data/on-event-extension-install.sh
+ADD cloud/favicon.svg /favicon.svg
+ADD cloud/favicon.ico /favicon.ico
 
-# Create a user named "devuser" with a specific UID (1000) and assign it to "devusergroup"
-RUN useradd -m -u 1000 -g devusergroup -s /bin/bash $USERNAME
+# Create necessary directories with proper permissions for code-server
+RUN mkdir -p /usr/local/share/code-server/data/User/globalStorage && \
+    mkdir -p /usr/local/share/code-server/data/User/History && \
+    mkdir -p /usr/local/share/code-server/data/Machine && \
+    mkdir -p /usr/local/share/code-server/data/logs
 
-# Add the user to sudoers for admin privileges
-RUN echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+# Add code server settings.json
+ADD cloud/settings.json /usr/local/share/code-server/data/Machine/settings.json
 
-# Create an embedded entrypoint script
-ADD entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chown -R devuser:devusergroup /usr/local/share/code-server && \
+    chmod -R 755 /usr/local/share/code-server && \
+    # Copy icons
+    cp -f /favicon.ico /usr/local/lib/code-server/src/browser/media/favicon.ico && \
+    cp -f /favicon.svg /usr/local/lib/code-server/src/browser/media/favicon-dark-support.svg && \
+    cp -f /favicon.svg /usr/local/lib/code-server/src/browser/media/favicon.svg
 
-RUN chown -R $USERNAME:devusergroup /pythagora
+# Configure PostHog analytics integration
+RUN sed -i "s|'sha256-/r7rqQ+yrxt57sxLuQ6AMYcy/lUpvAIzHjIJt/OeLWU=' ;|'sha256-/r7rqQ+yrxt57sxLuQ6AMYcy/lUpvAIzHjIJt/OeLWU=' https://us-assets.i.posthog.com ;|g" /usr/local/lib/code-server/lib/vscode/out/server-main.js
 
-# Copy SSH public key from secret
-#RUN --mount=type=secret,id=ssh_public_key \
-#    mkdir -p /home/${USERNAME}/.ssh \
-#    && cat /run/secrets/ssh_public_key > /home/${USERNAME}/.ssh/authorized_keys \
-#    && chown -R ${USERNAME}:devusergroup /home/${USERNAME}/.ssh \
-#    && chmod 700 /home/${USERNAME}/.ssh \
-#    && chmod 600 /home/${USERNAME}/.ssh/authorized_keys
+COPY cloud/posthog.html /tmp/posthog.html
+RUN sed -i '/<head>/r /tmp/posthog.html' /usr/local/lib/code-server/lib/vscode/out/vs/code/browser/workbench/workbench.html && \
+    rm /tmp/posthog.html
 
-USER $USERNAME
+RUN chmod +x /entrypoint.sh && \
+    chmod +x /var/init_data/on-event-extension-install.sh && \
+    chown -R devuser:devusergroup /pythagora && \
+    chown -R devuser: /var/init_data/
 
-RUN npx @puppeteer/browsers install chrome@stable
+# Create workspace directory
+RUN mkdir -p ${PYTH_INSTALL_DIR}/pythagora-core/workspace && \
+    chown -R devuser:devusergroup ${PYTH_INSTALL_DIR}/pythagora-core/workspace
 
-# add this before vscode... better caching of layers
-ADD pythagora-vs-code.vsix /var/init_data/pythagora-vs-code.vsix
+# Set up git config
+RUN su -c "git config --global user.email 'devuser@pythagora.ai'" devuser && \
+    su -c "git config --global user.name 'pythagora'" devuser
 
-RUN mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
-
-# ARG commitHash
-# # VS Code server installation with platform-specific handling
-# RUN case "$TARGETPLATFORM" in \
-#     "linux/amd64") \
-#     mkdir -p ~/.vscode-server/cli/servers/Stable-${commitHash} && \
-#     curl -fsSL https://update.code.visualstudio.com/commit:${commitHash}/server-linux-x64/stable -o server-linux-x64.tar.gz && \
-#     tar -xz -f server-linux-x64.tar.gz -C ~/.vscode-server/cli/servers/Stable-${commitHash} && \
-#     mv ~/.vscode-server/cli/servers/Stable-${commitHash}/vscode-server-linux-x64 ~/.vscode-server/cli/servers/Stable-${commitHash}/server \
-#     ;; \
-#     "linux/arm64"|"linux/arm64/v8") \
-#     mkdir -p ~/.vscode-server/cli/servers/Stable-${commitHash} && \
-#     curl -fsSL https://update.code.visualstudio.com/commit:${commitHash}/server-linux-arm64/stable -o server-linux-arm64.tar.gz && \
-#     tar -xz -f server-linux-arm64.tar.gz -C ~/.vscode-server/cli/servers/Stable-${commitHash} && \
-#     mv ~/.vscode-server/cli/servers/Stable-${commitHash}/vscode-server-linux-arm64 ~/.vscode-server/cli/servers/Stable-${commitHash}/server \
-#     ;; \
-#     *) \
-#     echo "Unsupported platform: $TARGETPLATFORM" && exit 1 \
-#     ;; \
-#     esac
-
-
-# Install VS Code extension (platform-agnostic)
-# RUN ~/.vscode-server/cli/servers/Stable-${commitHash}/server/bin/code-server --install-extension pythagora-vs-code.vsix
-ADD on-event-extension-install.sh /var/init_data/on-event-extension-install.sh
-
-# Create a workspace directory
-RUN mkdir -p ${PYTH_INSTALL_DIR}/pythagora-core/workspace
-
-RUN mkdir -p /home/$USERNAME/.vscode-server/cli/servers
-
-USER root
-
-RUN chmod +x /var/init_data/on-event-extension-install.sh
-RUN chown -R devuser: /var/init_data/
-
-# Set the entrypoint to the main application
+# Remove the USER directive to keep root as the running user
 ENTRYPOINT ["/entrypoint.sh"]

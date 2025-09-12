@@ -62,7 +62,7 @@ async def agentcontext(testmanager):
             ask_question=AsyncMock(),
         )
 
-        await sm.create_project("test")
+        await sm.create_project(name="test", project_type="node")
 
         mock_llm = None
 

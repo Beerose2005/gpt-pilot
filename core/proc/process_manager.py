@@ -30,6 +30,7 @@ class LocalProcess:
     stdout: str
     stderr: str
     _process: asyncio.subprocess.Process
+    show_output: bool
 
     def __hash__(self) -> int:
         return hash(self.id)
@@ -41,6 +42,7 @@ class LocalProcess:
         cwd: str = ".",
         env: dict[str, str],
         bg: bool = False,
+        show_output: Optional[bool] = True,
     ) -> "LocalProcess":
         log.debug(f"Starting process: {cmd} (cwd={cwd})")
         _process = await asyncio.create_subprocess_shell(
@@ -56,13 +58,7 @@ class LocalProcess:
             _process.stdin.close()
 
         return LocalProcess(
-            id=uuid4(),
-            cmd=cmd,
-            cwd=cwd,
-            env=env,
-            stdout="",
-            stderr="",
-            _process=_process,
+            id=uuid4(), cmd=cmd, cwd=cwd, env=env, stdout="", stderr="", _process=_process, show_output=show_output
         )
 
     async def wait(self, timeout: Optional[float] = None) -> int:
@@ -190,7 +186,7 @@ class ProcessManager:
 
             for process in procs:
                 out, err = await process.read_output()
-                if self.output_handler and (out or err):
+                if process.show_output and self.output_handler and (out or err):
                     await self.output_handler(out, err)
 
                 if not process.is_running:
@@ -210,10 +206,11 @@ class ProcessManager:
         cwd: str = ".",
         env: Optional[dict[str, str]] = None,
         bg: bool = True,
+        show_output: Optional[bool] = True,
     ) -> LocalProcess:
         env = {**self.default_env, **(env or {})}
         abs_cwd = abspath(join(self.root_dir, cwd))
-        process = await LocalProcess.start(cmd, cwd=abs_cwd, env=env, bg=bg)
+        process = await LocalProcess.start(cmd, cwd=abs_cwd, env=env, bg=bg, show_output=show_output)
         if bg:
             self.processes[process.id] = process
         return process

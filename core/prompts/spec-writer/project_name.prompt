@@ -1,0 +1,5 @@
+Generate a simple project name from the following description:
+```text
+{{description}}
+```
+Use a maximum of 2-3 words, no more than 15 characters, and avoid using special characters or spaces. Respond with only the project name, without any additional text or formatting.

@@ -27,11 +27,6 @@ app.use(cors({}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-{% if options.auth %}
-// Authentication routes
-app.use(authRoutes);
-{% endif %}
-
 // Database connection
 connectDB();
 

@@ -5,6 +5,8 @@ from typing import Any, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing_extensions import Annotated
 
+from core.config.constants import LOGS_LINE_LIMIT
+
 ROOT_DIR = abspath(join(dirname(__file__), "..", ".."))
 DEFAULT_IGNORE_PATHS = [
     ".git",
@@ -36,12 +38,14 @@ IGNORE_SIZE_THRESHOLD = 50000  # 50K+ files are ignored by default
 DEFAULT_AGENT_NAME = "default"
 CODE_MONKEY_AGENT_NAME = "CodeMonkey"
 CODE_REVIEW_AGENT_NAME = "CodeMonkey.code_review"
+IMPLEMENT_CHANGES_AGENT_NAME = "CodeMonkey.implement_changes"
 DESCRIBE_FILES_AGENT_NAME = "CodeMonkey.describe_files"
 CHECK_LOGS_AGENT_NAME = "BugHunter.check_logs"
 PARSE_TASK_AGENT_NAME = "Developer.parse_task"
 TASK_BREAKDOWN_AGENT_NAME = "Developer.breakdown_current_task"
 TROUBLESHOOTER_BUG_REPORT = "Troubleshooter.generate_bug_report"
 TROUBLESHOOTER_GET_RUN_COMMAND = "Troubleshooter.get_run_command"
+TROUBLESHOOTER_DEFINE_USER_REVIEW_GOAL = "Troubleshooter.define_user_review_goal"
 TECH_LEAD_PLANNING = "TechLead.plan_epic"
 TECH_LEAD_EPIC_BREAKDOWN = "TechLead.epic_breakdown"
 SPEC_WRITER_AGENT_NAME = "SpecWriter"
@@ -50,6 +54,7 @@ FRONTEND_AGENT_NAME = "Frontend"
 
 # Endpoint for the external documentation
 EXTERNAL_DOCUMENTATION_API = "http://docs-pythagora-io-439719575.us-east-1.elb.amazonaws.com"
+PYTHAGORA_API = "https://api.pythagora.ai"
 
 
 class _StrictModel(BaseModel):
@@ -68,6 +73,7 @@ class LLMProvider(str, Enum):
     """
 
     OPENAI = "openai"
+    RELACE = "relace"
     ANTHROPIC = "anthropic"
     GROQ = "groq"
     LM_STUDIO = "lm-studio"
@@ -215,8 +221,12 @@ class LogConfig(_StrictModel):
         description="Logging format",
     )
     output: Optional[str] = Field(
-        "pythagora.log",
+        "data/pythagora.log",
         description="Output file for logs (if not specified, logs are printed to stderr)",
+    )
+    max_lines: int = Field(
+        LOGS_LINE_LIMIT,
+        description="Maximum number of lines to keep in the log file",
     )
 
 
@@ -234,6 +244,7 @@ class DBConfig(_StrictModel):
         description="Database connection URL",
     )
     debug_sql: bool = Field(False, description="Log all SQL queries to the console")
+    save_llm_requests: bool = Field(False, description="Save LLM requests to db")
 
     @field_validator("url")
     @classmethod
@@ -320,25 +331,31 @@ class Config(_StrictModel):
         default={
             LLMProvider.OPENAI: ProviderConfig(),
             LLMProvider.ANTHROPIC: ProviderConfig(),
+            LLMProvider.RELACE: ProviderConfig(),
         }
     )
     agent: dict[str, AgentLLMConfig] = Field(
         default={
             DEFAULT_AGENT_NAME: AgentLLMConfig(),
             CHECK_LOGS_AGENT_NAME: AgentLLMConfig(
-                provider=LLMProvider.ANTHROPIC,
-                model="claude-3-5-sonnet-20241022",
+                provider=LLMProvider.OPENAI,
+                model="claude-sonnet-4-20250514",
                 temperature=0.5,
             ),
             CODE_MONKEY_AGENT_NAME: AgentLLMConfig(
-                provider=LLMProvider.ANTHROPIC,
-                model="claude-3-5-sonnet-20241022",
+                provider=LLMProvider.OPENAI,
+                model="claude-sonnet-4-20250514",
                 temperature=0.0,
             ),
             CODE_REVIEW_AGENT_NAME: AgentLLMConfig(
-                provider=LLMProvider.ANTHROPIC,
+                provider=LLMProvider.OPENAI,
                 model="claude-3-5-sonnet-20240620",
                 temperature=0.0,
+            ),
+            IMPLEMENT_CHANGES_AGENT_NAME: AgentLLMConfig(
+                provider=LLMProvider.RELACE,
+                model="relace-code-merge",
+                temperature=0.0,  # temperature is unused for relace
             ),
             DESCRIBE_FILES_AGENT_NAME: AgentLLMConfig(
                 provider=LLMProvider.OPENAI,
@@ -346,8 +363,8 @@ class Config(_StrictModel):
                 temperature=0.0,
             ),
             FRONTEND_AGENT_NAME: AgentLLMConfig(
-                provider=LLMProvider.ANTHROPIC,
-                model="claude-3-5-sonnet-20241022",
+                provider=LLMProvider.OPENAI,
+                model="claude-sonnet-4-20250514",
                 temperature=0.0,
             ),
             GET_RELEVANT_FILES_AGENT_NAME: AgentLLMConfig(
@@ -356,38 +373,43 @@ class Config(_StrictModel):
                 temperature=0.5,
             ),
             PARSE_TASK_AGENT_NAME: AgentLLMConfig(
-                provider=LLMProvider.ANTHROPIC,
+                provider=LLMProvider.OPENAI,
                 model="claude-3-5-sonnet-20241022",
                 temperature=0.0,
             ),
             SPEC_WRITER_AGENT_NAME: AgentLLMConfig(
                 provider=LLMProvider.OPENAI,
-                model="gpt-4-0125-preview",
+                model="claude-sonnet-4-20250514",
                 temperature=0.0,
             ),
             TASK_BREAKDOWN_AGENT_NAME: AgentLLMConfig(
-                provider=LLMProvider.ANTHROPIC,
-                model="claude-3-5-sonnet-20241022",
+                provider=LLMProvider.OPENAI,
+                model="claude-sonnet-4-20250514",
                 temperature=0.5,
             ),
             TECH_LEAD_PLANNING: AgentLLMConfig(
-                provider=LLMProvider.ANTHROPIC,
+                provider=LLMProvider.OPENAI,
                 model="claude-3-5-sonnet-20240620",
                 temperature=0.5,
             ),
             TECH_LEAD_EPIC_BREAKDOWN: AgentLLMConfig(
-                provider=LLMProvider.ANTHROPIC,
+                provider=LLMProvider.OPENAI,
                 model="claude-3-5-sonnet-20241022",
                 temperature=0.5,
             ),
             TROUBLESHOOTER_BUG_REPORT: AgentLLMConfig(
-                provider=LLMProvider.ANTHROPIC,
-                model="claude-3-5-sonnet-20240620",
+                provider=LLMProvider.OPENAI,
+                model="claude-sonnet-4-20250514",
                 temperature=0.5,
             ),
             TROUBLESHOOTER_GET_RUN_COMMAND: AgentLLMConfig(
-                provider=LLMProvider.ANTHROPIC,
-                model="claude-3-5-sonnet-20240620",
+                provider=LLMProvider.OPENAI,
+                model="claude-sonnet-4-20250514",
+                temperature=0.0,
+            ),
+            TROUBLESHOOTER_DEFINE_USER_REVIEW_GOAL: AgentLLMConfig(
+                provider=LLMProvider.OPENAI,
+                model="claude-sonnet-4-20250514",
                 temperature=0.0,
             ),
         }

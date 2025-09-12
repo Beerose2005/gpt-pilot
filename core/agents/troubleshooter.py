@@ -9,6 +9,7 @@ from core.agents.convo import AgentConvo
 from core.agents.mixins import ChatWithBreakdownMixin, IterationPromptMixin, RelevantFilesMixin, TestSteps
 from core.agents.response import AgentResponse
 from core.config import TROUBLESHOOTER_GET_RUN_COMMAND
+from core.config.actions import TS_ALT_SOLUTION, TS_APP_WORKING, TS_DESCRIBE_ISSUE, TS_TASK_REVIEWED
 from core.db.models.file import File
 from core.db.models.project_state import IterationStatus, TaskStatus
 from core.llm.parser import JSONParser, OptionalCodeBlockParser
@@ -77,19 +78,30 @@ class Troubleshooter(ChatWithBreakdownMixin, IterationPromptMixin, RelevantFiles
             await self.ui.send_project_stage({"stage": ProjectStage.TEST_APP})
             await self.ui.send_message("Test the app by following these steps:", source=pythagora_source)
 
-        await self.send_message("")
-        await self.ui.stop_app()
         await self.ui.send_test_instructions(user_instructions, project_state_id=str(self.current_state.id))
 
         # Developer sets iteration as "completed" when it generates the step breakdown, so we can't
         # use "current_iteration" here
         last_iteration = self.current_state.iterations[-1] if len(self.current_state.iterations) >= 3 else None
 
-        should_iterate, is_loop, bug_report, change_description = await self.get_user_feedback(
+        should_iterate, is_loop, should_redo, bug_report, change_description = await self.get_user_feedback(
             run_command,
             user_instructions,
             last_iteration is not None,
         )
+
+        if should_redo:
+            # ask user to provide more info
+            task_redo_info_question = await self.ask_question(
+                "Please provide more information about the task you want to redo",
+                buttons_only=False,
+            )
+
+            if task_redo_info_question.text:
+                self.next_state.current_task["redo_human_instructions"] = task_redo_info_question.text
+
+            return AgentResponse.done(self)
+
         if not should_iterate:
             # User tested and reported no problems, we're done with the task
             return await self.complete_task()
@@ -142,7 +154,7 @@ class Troubleshooter(ChatWithBreakdownMixin, IterationPromptMixin, RelevantFiles
             await self.trace_loop("loop-end")
 
         current_task_index1 = self.current_state.tasks.index(self.current_state.current_task) + 1
-        self.next_state.action = f"Task #{current_task_index1} reviewed"
+        self.next_state.action = TS_TASK_REVIEWED.format(current_task_index1)
         self.next_state.set_current_task_status(TaskStatus.REVIEWED)
         return AgentResponse.done(self)
 
@@ -151,6 +163,15 @@ class Troubleshooter(ChatWithBreakdownMixin, IterationPromptMixin, RelevantFiles
         task = self.current_state.current_task
         current_task_index = self.current_state.tasks.index(task)
 
+        related_api_endpoints = task.get("related_api_endpoints", [])
+        # TODO: Temp fix for old projects
+        if not (
+            related_api_endpoints
+            and len(related_api_endpoints) > 0
+            and all(isinstance(api, dict) and "endpoint" in api for api in related_api_endpoints)
+        ):
+            related_api_endpoints = []
+
         return (
             AgentConvo(self)
             .template(
@@ -158,7 +179,7 @@ class Troubleshooter(ChatWithBreakdownMixin, IterationPromptMixin, RelevantFiles
                 task=task,
                 iteration=None,
                 current_task_index=current_task_index,
-                related_api_endpoints=task.get("related_api_endpoints", []),
+                related_api_endpoints=related_api_endpoints,
             )
             .assistant(self.current_state.current_task["instructions"])
         )
@@ -180,7 +201,7 @@ class Troubleshooter(ChatWithBreakdownMixin, IterationPromptMixin, RelevantFiles
         return llm_response
 
     async def get_user_instructions(self) -> Optional[str]:
-        await self.send_message("Determining how to test the app ...")
+        await self.send_message("### Determining how to test the app ...")
 
         route_files = await self._get_route_files()
         current_task = self.current_state.current_task
@@ -225,7 +246,7 @@ class Troubleshooter(ChatWithBreakdownMixin, IterationPromptMixin, RelevantFiles
         run_command: str,
         user_instructions: str,
         last_iteration: Optional[dict],
-    ) -> tuple[bool, bool, str, str]:
+    ) -> tuple[bool, bool, bool, str, str]:
         """
         Ask the user to test the app and provide feedback.
 
@@ -237,6 +258,8 @@ class Troubleshooter(ChatWithBreakdownMixin, IterationPromptMixin, RelevantFiles
 
         If "is_loop" is True, Pythagora is stuck in a loop and needs to consider alternative solutions.
 
+        If "should_redo" is True, the user wants to redo the task and we need to reset the task and start over.
+
         The last element in the tuple is the user feedback, which may be empty if the user provided no
         feedback (eg. if they just clicked on "Continue" or "Start Pair Programming").
         """
@@ -247,12 +270,13 @@ class Troubleshooter(ChatWithBreakdownMixin, IterationPromptMixin, RelevantFiles
 
         is_loop = False
         should_iterate = True
-        extra_info = "restart_app" if not self.current_state.iterations else None
+        should_redo = False
+        extra_info = {"restart_app": True} if not self.current_state.iterations else None
 
         while True:
             await self.ui.send_project_stage({"stage": ProjectStage.GET_USER_FEEDBACK})
 
-            test_message = "Please check if the app is working"
+            test_message = TS_APP_WORKING
             if user_instructions:
                 hint = " Here is a description of what should be working:\n\n" + user_instructions
 
@@ -261,9 +285,11 @@ class Troubleshooter(ChatWithBreakdownMixin, IterationPromptMixin, RelevantFiles
 
             buttons = {
                 "continue": "Everything works",
-                "change": "I want to make a change",
                 "bug": "There is an issue",
+                "change": "I want to make a change",
             }
+            if not self.current_state.current_task.get("hardcoded", False):
+                buttons["redo"] = "Redo task"
 
             user_response = await self.ask_question(
                 test_message,
@@ -274,6 +300,10 @@ class Troubleshooter(ChatWithBreakdownMixin, IterationPromptMixin, RelevantFiles
                 extra_info=extra_info,
             )
             extra_info = None
+
+            if user_response.button == "redo":
+                should_redo = True
+                break
 
             if user_response.button == "continue" or user_response.cancelled:
                 should_iterate = False
@@ -288,23 +318,32 @@ class Troubleshooter(ChatWithBreakdownMixin, IterationPromptMixin, RelevantFiles
                 if user_description.button == "back":
                     continue
                 change_description = user_description.text
-                await self.get_relevant_files(user_feedback=change_description)
+                await self.get_relevant_files_parallel(user_feedback=change_description)
                 break
 
             elif user_response.button == "bug":
                 await self.ui.send_project_stage({"stage": ProjectStage.DESCRIBE_ISSUE})
                 user_description = await self.ask_question(
-                    "Please describe the issue you found (one at a time) and share any relevant server logs",
-                    extra_info="collect_logs",
+                    TS_DESCRIBE_ISSUE,
+                    extra_info={"collect_logs": True},
                     buttons={"back": "Back"},
                 )
                 if user_description.button == "back":
                     continue
                 bug_report = user_description.text
-                await self.get_relevant_files(user_feedback=bug_report)
+                await self.ui.send_project_stage(
+                    {
+                        "bug_fix_attempt": 1,
+                    }
+                )
+                await self.get_relevant_files_parallel(user_feedback=bug_report)
+                break
+            elif user_response.text and isinstance(user_response.text, str):
+                bug_report = user_response.text
+                await self.get_relevant_files_parallel(user_feedback=bug_report)
                 break
 
-        return should_iterate, is_loop, bug_report, change_description
+        return should_iterate, is_loop, should_redo, bug_report, change_description
 
     def try_next_alternative_solution(self, user_feedback: str, user_feedback_qa: list[str]) -> AgentResponse:
         """
@@ -323,7 +362,7 @@ class Troubleshooter(ChatWithBreakdownMixin, IterationPromptMixin, RelevantFiles
         next_state_iteration["attempts"] += 1
         next_state_iteration["status"] = IterationStatus.PROBLEM_SOLVER
         self.next_state.flag_iterations_as_modified()
-        self.next_state.action = f"Alternative solution (attempt #{next_state_iteration['attempts']})"
+        self.next_state.action = TS_ALT_SOLUTION.format(next_state_iteration["attempts"])
         return AgentResponse.done(self)
 
     async def generate_bug_report(

@@ -44,6 +44,7 @@ async def test_offline_changes_check_restores_changes_from_db():
 async def test_import_if_new_files(agentcontext):
     sm, _, ui, _ = agentcontext
 
+    sm.file_system = await sm.init_file_system(load_existing=False)
     state = await sm.commit()
 
     orca = Orchestrator(state_manager=sm, ui=ui)
@@ -62,7 +63,7 @@ async def test_import_if_new_files(agentcontext):
 @pytest.mark.asyncio
 async def test_import_if_modified_files(agentcontext):
     sm, _, ui, _ = agentcontext
-
+    sm.file_system = await sm.init_file_system(load_existing=False)
     await sm.commit()
     await sm.save_file("test.txt", "Hello, world!")
     state = await sm.commit()
@@ -83,7 +84,7 @@ async def test_import_if_modified_files(agentcontext):
 @pytest.mark.asyncio
 async def test_import_if_deleted_files(agentcontext):
     sm, _, ui, _ = agentcontext
-
+    sm.file_system = await sm.init_file_system(load_existing=False)
     await sm.commit()
     await sm.save_file("test.txt", "Hello, world!")
     state = await sm.commit()

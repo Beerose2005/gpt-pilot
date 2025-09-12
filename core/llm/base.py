@@ -1,18 +1,25 @@
 import asyncio
 import datetime
 import json
+import sys
 from enum import Enum
 from time import time
 from typing import Any, Callable, Optional, Tuple
 
 import httpx
+import tiktoken
+from httpx import AsyncClient
 
 from core.config import LLMConfig, LLMProvider
 from core.llm.convo import Convo
 from core.llm.request_log import LLMRequestLog, LLMRequestStatus
 from core.log import get_logger
+from core.state.state_manager import StateManager
+from core.ui.base import UIBase, pythagora_source
+from core.utils.text import trim_logs
 
 log = get_logger(__name__)
+tokenizer = tiktoken.get_encoding("cl100k_base")
 
 
 class LLMError(str, Enum):
@@ -48,9 +55,11 @@ class BaseLLMClient:
     def __init__(
         self,
         config: LLMConfig,
+        state_manager: StateManager,
         *,
         stream_handler: Optional[Callable] = None,
         error_handler: Optional[Callable] = None,
+        ui: Optional[UIBase] = None,
     ):
         """
         Initialize the client with the given configuration.
@@ -61,6 +70,8 @@ class BaseLLMClient:
         self.config = config
         self.stream_handler = stream_handler
         self.error_handler = error_handler
+        self.ui = ui
+        self.state_manager = state_manager
         self._init_client()
 
     def _init_client(self):
@@ -153,10 +164,27 @@ class BaseLLMClient:
             prompts=convo.prompt_log,
         )
 
+        prompt_tokens = sum(3 + len(tokenizer.encode(str(msg.get("content", "")))) for msg in convo.messages)
+
+        index = -1
+        if prompt_tokens > 150_000:
+            for i, msg in enumerate(reversed(convo.messages)):
+                if "Here are the backend logs" in msg["content"] or "Here are the frontend logs" in msg["content"]:
+                    index = len(convo.messages) - 1 - i
+                    break
+
+            if index != -1:
+                for i, msg in enumerate(convo.messages):
+                    if i < index:
+                        convo.messages[i]["content"] = trim_logs(convo.messages[i]["content"])
+                    else:
+                        break
+
         prompt_length_kb = len(json.dumps(convo.messages).encode("utf-8")) / 1024
         log.debug(
-            f"Calling {self.provider.value} model {self.config.model} (temp={temperature}), prompt length: {prompt_length_kb:.1f} KB"
+            f"Calling {self.provider.value} model {self.config.model} (temp={temperature}), prompt length: {prompt_length_kb:.1f} KB, prompt tokens (approx.): {prompt_tokens:.1f}"
         )
+
         t0 = time()
 
         remaining_retries = max_retries
@@ -186,6 +214,40 @@ class BaseLLMClient:
             response = None
 
             try:
+                access_token = self.state_manager.get_access_token()
+
+                if access_token:
+                    # Store the original client
+                    original_client = self.client
+
+                    # Copy client based on its type
+                    if isinstance(original_client, openai.AsyncOpenAI):
+                        self.client = openai.AsyncOpenAI(
+                            api_key=original_client.api_key,
+                            base_url=original_client.base_url,
+                            timeout=original_client.timeout,
+                            default_headers={
+                                "Authorization": f"Bearer {access_token}",
+                                "Timeout": str(max(self.config.connect_timeout, self.config.read_timeout)),
+                            },
+                        )
+                    elif isinstance(original_client, anthropic.AsyncAnthropic):
+                        # Create new Anthropic client with custom headers
+                        self.client = anthropic.AsyncAnthropic(
+                            api_key=original_client.api_key,
+                            base_url=original_client.base_url,
+                            timeout=original_client.timeout,
+                            default_headers={
+                                "Authorization": f"Bearer {access_token}",
+                                "Timeout": str(max(self.config.connect_timeout, self.config.read_timeout)),
+                            },
+                        )
+                    elif isinstance(original_client, AsyncClient):
+                        self.client = AsyncClient()
+                    else:
+                        # Handle other client types or raise exception
+                        raise ValueError(f"Unsupported client type: {type(original_client)}")
+
                 response, prompt_tokens, completion_tokens = await self._make_request(
                     convo,
                     temperature=temperature,
@@ -244,6 +306,44 @@ class BaseLLMClient:
                 # so we can't be certain that's the problem in Anthropic case.
                 # Here we try to detect that and tell the user what happened.
                 log.info(f"API status error: {err}")
+                if getattr(err, "status_code", None) in (401, 403):
+                    if self.ui:
+                        try:
+                            await self.ui.send_message("Token expired")
+                            sys.exit(0)
+                            # TODO implement this to not crash in parallel
+                            # access_token = await self.ui.send_token_expired()
+                            # self.state_manager.update_access_token(access_token)
+                            # continue
+                        except Exception:
+                            raise APIError("Token expired")
+
+                if getattr(err, "status_code", None) == 400 and getattr(err, "message", None) == "not_enough_tokens":
+                    if self.ui:
+                        try:
+                            await self.ui.ask_question(
+                                "",
+                                buttons={},
+                                buttons_only=True,
+                                extra_info={"not_enough_tokens": True},
+                                source=pythagora_source,
+                            )
+                            sys.exit(0)
+                            # TODO implement this to not crash in parallel
+                            # user_response = await self.ui.ask_question(
+                            #     'Not enough tokens left, please top up your account and press "Continue".',
+                            #     buttons={"continue": "Continue", "exit": "Exit"},
+                            #     buttons_only=True,
+                            #     extra_info={"not_enough_tokens": True},
+                            #     source=pythagora_source,
+                            # )
+                            # if user_response.button == "continue":
+                            #     continue
+                            # else:
+                            #     raise APIError("Not enough tokens left")
+                        except Exception:
+                            raise APIError("Not enough tokens left")
+
                 try:
                     if hasattr(err, "response"):
                         if err.response.headers.get("Content-Type", "").startswith("application/json"):
@@ -294,7 +394,10 @@ class BaseLLMClient:
                     request_log.error = f"Error parsing response: {err}"
                     request_log.status = LLMRequestStatus.ERROR
                     log.debug(f"Error parsing LLM response: {err}, asking LLM to retry", exc_info=True)
-                    convo.assistant(response)
+                    if response:
+                        convo.assistant(response)
+                    else:
+                        convo.assistant(".")
                     convo.user(f"Error parsing response: {err}. Please output your response EXACTLY as requested.")
                     continue
             else:
@@ -309,19 +412,6 @@ class BaseLLMClient:
 
         return response, request_log
 
-    async def api_check(self) -> bool:
-        """
-        Perform an LLM API check.
-
-        :return: True if the check was successful, False otherwise.
-        """
-
-        convo = Convo()
-        msg = "This is a connection test. If you can see this, please respond only with 'START' and nothing else."
-        convo.user(msg)
-        resp, _log = await self(convo)
-        return bool(resp)
-
     @staticmethod
     def for_provider(provider: LLMProvider) -> type["BaseLLMClient"]:
         """
@@ -334,9 +424,12 @@ class BaseLLMClient:
         from .azure_client import AzureClient
         from .groq_client import GroqClient
         from .openai_client import OpenAIClient
+        from .relace_client import RelaceClient
 
         if provider == LLMProvider.OPENAI:
             return OpenAIClient
+        elif provider == LLMProvider.RELACE:
+            return RelaceClient
         elif provider == LLMProvider.ANTHROPIC:
             return AnthropicClient
         elif provider == LLMProvider.GROQ:

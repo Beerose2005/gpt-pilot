@@ -2,11 +2,13 @@ You are working on a project called "{{ state.branch.project.name }}" and you ne
 
 {% include "partials/project_details.prompt" %}
 {% include "partials/features_list.prompt" %}
-{% include "partials/files_list.prompt" %}
 
-DO NOT specify commands to create any folders or files, they will be created automatically - just specify the relative path to file that needs to be written.
+~~FILE_DESCRIPTIONS_IN_THE_CODEBASE~~
+{% include "partials/files_descriptions.prompt" %}
+~~END_OF_FILE_DESCRIPTIONS_IN_THE_CODEBASE~~
 
-{% include "partials/relative_paths.prompt" %}
+Project dependencies are installed using "npm install" in the root folder. That will install all the necessary dependencies in the root, client and server folders.
+Project is started using "npm run start" in the root folder. That will start both the frontend and backend.
 
 Now, based on the project details provided, think step by step and create README.md file for this project. The file should have the following format:
 

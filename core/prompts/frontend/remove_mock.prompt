@@ -1,0 +1,68 @@
+Now you need to remove mocked data from the file and replace it with real API requests.
+Replace only mocked data, do not change any other part of the file.
+
+{% if relevant_api_documentation is defined %}
+Here is external documentation that you will need to properly implement real API requests:
+~~~START_OF_DOCUMENTATION~~~
+{{ relevant_api_documentation }}
+~~~END_OF_DOCUMENTATION~~~
+
+IMPORTANT: Do not implement backend server logic for this, as this is already available in the external API!
+{% endif %}
+
+This is the file that you need to change:
+**`{{ file_path }}`** ({{ lines }} lines of code):
+```
+{{ file_content }}
+```
+
+{% if referencing_files|length > 0 %}
+Here are other relevant files that you need to take into consideration:
+~~~START_OF_FILES~~~
+{% for file in referencing_files %}
+**`{{ file.path }}`** ({{file.content.content.splitlines()|length}} lines of code):
+```
+{{ file.content.content }}```
+{% endfor %}
+~~~END_OF_FILES~~~
+{% endif %}
+
+Now, return the entire file `{{ file_path }}` with removed mocked. Replace the mocked data with the API requests to the API defined above. You **MUST** correctly replace the mocked data with API requests and if the response from the API is not in the correct format as the response format from these functions, you **MUST** modify the API response so that it matches the response and return that modified format from the function. Here is an example of how to call the API:
+~~START_OF_EXAMPLE_OF_API_REQUESTS~~
+import api from './api';
+
+// Get customer statistics
+// GET /api/metrics/customer-stats
+// Request query params: startDate: string, endDate: string
+// Response: {
+//   category: Array<{ name: string, value: number }>,
+//   useCase: Array<{ name: string, value: number }>,
+//   alternative: Array<{ name: string, value: number }>
+// }
+export const getCustomerStats = async (startDate: string, endDate: string) => {
+  try {
+    const response = await api.get('/api/metrics/customer-stats', {
+      params: { startDate, endDate }
+    });
+    return response.data;
+  } catch (error) {
+    throw new Error(error?.response?.data?.error || error.message);
+  }
+};
+
+// Export customer data
+// GET /api/metrics/export-customers
+// Request query params: startDate: string, endDate: string
+// Response: Blob (CSV file)
+export const exportCustomerData = async (startDate: string, endDate: string) => {
+  try {
+    const response = await api.get('/api/metrics/export-customers', {
+      params: { startDate, endDate },
+      responseType: 'blob'
+    });
+    return response.data;
+  } catch (error) {
+    throw new Error(error?.response?.data?.error || error.message);
+  }
+};
+~~END_OF_EXAMPLE_OF_API_REQUESTS~~

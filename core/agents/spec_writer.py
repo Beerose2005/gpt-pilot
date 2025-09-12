@@ -1,20 +1,17 @@
+import secrets
+
 from core.agents.base import BaseAgent
 from core.agents.convo import AgentConvo
 from core.agents.response import AgentResponse, ResponseType
-from core.config import SPEC_WRITER_AGENT_NAME
+from core.config import DEFAULT_AGENT_NAME, SPEC_WRITER_AGENT_NAME
+from core.config.actions import SPEC_CHANGE_FEATURE_STEP_NAME, SPEC_CHANGE_STEP_NAME, SPEC_CREATE_STEP_NAME
 from core.db.models import Complexity
 from core.db.models.project_state import IterationStatus
 from core.llm.parser import StringParser
 from core.log import get_logger
 from core.telemetry import telemetry
-
-# If the project description is less than this, perform an analysis using LLM
-ANALYZE_THRESHOLD = 1500
-# URL to the wiki page with tips on how to write a good project description
-INITIAL_PROJECT_HOWTO_URL = (
-    "https://github.com/Pythagora-io/gpt-pilot/wiki/How-to-write-a-good-initial-project-description"
-)
-SPEC_STEP_NAME = "Create specification"
+from core.templates.registry import PROJECT_TEMPLATES
+from core.ui.base import ProjectStage
 
 log = get_logger(__name__)
 
@@ -29,55 +26,294 @@ class SpecWriter(BaseAgent):
             return await self.update_spec(iteration_mode=True)
         elif self.prev_response and self.prev_response.type == ResponseType.UPDATE_SPECIFICATION:
             return await self.update_spec(iteration_mode=False)
+        elif not self.current_state.specification.description:
+            return await self.initialize_spec_and_project()
         else:
-            return await self.initialize_spec()
+            return await self.change_spec()
 
-    async def initialize_spec(self) -> AgentResponse:
-        # response = await self.ask_question(
-        #     "Describe your app in as much detail as possible",
-        #     allow_empty=False,
-        # )
-        # if response.cancelled:
-        #     return AgentResponse.error(self, "No project description")
-        #
-        # user_description = response.text.strip()
-        user_description = self.current_state.epics[0]["description"]
+    async def apply_template(self):
+        """
+        Applies a template to the frontend.
+        """
+        options = self.current_state.knowledge_base.user_options
+        if options["auth_type"] == "api_key" or options["auth_type"] == "none":
+            template_name = "vite_react_swagger"
+        else:
+            template_name = "vite_react"
+        template_class = PROJECT_TEMPLATES.get(template_name)
+        if not template_class:
+            log.error(f"Project template not found: {template_name}")
+            return
 
-        complexity = await self.check_prompt_complexity(user_description)
+        template = template_class(
+            options,
+            self.state_manager,
+            self.process_manager,
+        )
+        if not self.state_manager.template:
+            self.state_manager.template = {}
+        self.state_manager.template["template"] = template
+        log.info(f"Applying project template: {template.name}")
+        summary = await template.apply()
+
+        self.next_state.relevant_files = template.relevant_files
+        self.next_state.modified_files = {}
+        self.next_state.specification.template_summary = summary
+
+    async def initialize_spec_and_project(self) -> AgentResponse:
+        self.next_state.action = SPEC_CREATE_STEP_NAME
+
+        await self.ui.send_project_stage({"stage": ProjectStage.PROJECT_DESCRIPTION})
+
+        await self.ui.clear_main_logs()
+
+        # Check if initial_prompt is provided in command line arguments
+        if self.args and self.args.initial_prompt:
+            description = self.args.initial_prompt.strip()
+            await self.ui.send_back_logs(
+                [
+                    {
+                        "title": "",
+                        "project_state_id": "spec",
+                        "labels": [""],
+                        "convo": [
+                            {"role": "assistant", "content": "Please describe the app you want to build."},
+                            {"role": "user", "content": description},
+                        ],
+                    }
+                ]
+            )
+        else:
+            user_description = await self.ask_question(
+                "Please describe the app you want to build.",
+                allow_empty=False,
+                full_screen=True,
+                verbose=True,
+                extra_info={
+                    "chat_section_tip": "\"Some text <a href='https://example.com'>link text</a> on how to build apps with Pythagora.\""
+                },
+            )
+            description = user_description.text.strip()
+
+            await self.ui.send_back_logs(
+                [
+                    {
+                        "title": "",
+                        "project_state_id": self.current_state.id,
+                        "labels": [""],
+                        "convo": [
+                            {"role": "assistant", "content": "Please describe the app you want to build."},
+                            {"role": "user", "content": description},
+                        ],
+                    }
+                ]
+            )
+
+        await self.ui.send_back_logs(
+            [
+                {
+                    "title": "Writing Specification",
+                    "project_state_id": "spec",
+                    "labels": ["E1 / T1", "Specs", "working"],
+                    "disallow_reload": True,
+                }
+            ]
+        )
+
+        await self.ui.send_front_logs_headers("specs_0", ["E1 / T1", "Writing Specification", "working"], "")
+
+        await self.send_message(
+            "## Write specification\n\nPythagora is generating a detailed specification for app based on your input.",
+            # project_state_id="setup",
+        )
+
+        llm = self.get_llm(SPEC_WRITER_AGENT_NAME, stream_output=True, route="forwardToCenter")
+        convo = AgentConvo(self).template(
+            "build_full_specification",
+            initial_prompt=description,
+        )
+
+        llm_assisted_description = await llm(convo)
+
+        await self.ui.send_project_stage({"stage": ProjectStage.PROJECT_NAME})
+
+        llm = self.get_llm(DEFAULT_AGENT_NAME)
+        convo = AgentConvo(self).template(
+            "project_name",
+            description=llm_assisted_description,
+        )
+        llm_response: str = await llm(convo, temperature=0)
+        project_name = llm_response.strip()
+
+        self.state_manager.project.name = project_name
+        self.state_manager.project.folder_name = project_name.replace(" ", "_").replace("-", "_")
+
+        self.state_manager.file_system = await self.state_manager.init_file_system(load_existing=False)
+
+        self.process_manager.root_dir = self.state_manager.file_system.root
+
+        self.next_state.knowledge_base.user_options["original_description"] = description
+        self.next_state.knowledge_base.user_options["project_description"] = llm_assisted_description
+
+        self.next_state.specification = self.current_state.specification.clone()
+        self.next_state.specification.description = llm_assisted_description
+        self.next_state.specification.original_description = description
+        return AgentResponse.done(self)
+
+    async def change_spec(self) -> AgentResponse:
+        llm = self.get_llm(SPEC_WRITER_AGENT_NAME, stream_output=True, route="forwardToCenter")
+
+        description = self.current_state.specification.original_description
+
+        current_description = self.current_state.specification.description
+        convo = AgentConvo(self).template(
+            "build_full_specification",
+            initial_prompt=self.current_state.specification.description.strip(),
+        )
+
+        while True:
+            user_done_with_description = await self.ask_question(
+                "Are you satisfied with the project description?",
+                buttons={
+                    "yes": "Yes",
+                    "no": "No, I want to add more details",
+                },
+                default="yes",
+                buttons_only=True,
+            )
+
+            if user_done_with_description.button == "yes":
+                await self.ui.send_project_stage({"stage": ProjectStage.SPECS_FINISHED})
+                break
+            elif user_done_with_description.button == "no":
+                await self.send_message("## What would you like to add?")
+                user_add_to_spec = await self.ask_question(
+                    "What would you like to add?",
+                    allow_empty=False,
+                )
+            else:
+                user_add_to_spec = user_done_with_description
+
+            await self.send_message("## Refining specification\n\nPythagora is refining the specs based on your input.")
+            # if user edits the spec with extension, it will be commited to db immediately, so we have to check if the description has changed
+            if current_description != self.current_state.specification.description:
+                convo = AgentConvo(self).template(
+                    "build_full_specification",
+                    initial_prompt=self.current_state.specification.description.strip(),
+                )
+
+            convo = convo.template("add_to_specification", user_message=user_add_to_spec.text.strip())
+
+            if len(convo.messages) > 6:
+                convo.slice(1, 4)
+
+            # await self.ui.set_important_stream()
+            llm_assisted_description = await llm(convo)
+
+            # when llm generates a new spec - make it the new default spec, even if user edited it before - because it will be shown in the extension
+            self.current_state.specification.description = llm_assisted_description
+            convo = convo.assistant(llm_assisted_description)
+
+        await self.ui.clear_main_logs()
+        await self.ui.send_back_logs(
+            [
+                {
+                    "title": "Writing Specification",
+                    "project_state_id": "spec",  # self.current_state.id,
+                    "labels": ["E1 / T1", "Specs", "done"],
+                    "convo": [
+                        {
+                            "role": "assistant",
+                            "content": "What do you want to build?",
+                        },
+                        {
+                            "role": "user",
+                            "content": self.current_state.specification.original_description,
+                        },
+                    ],
+                    "disallow_reload": True,
+                }
+            ]
+        )
+
+        llm = self.get_llm(SPEC_WRITER_AGENT_NAME)
+        convo = AgentConvo(self).template(
+            "need_auth",
+            description=self.current_state.specification.description,
+        )
+        llm_response: str = await llm(convo, temperature=0)
+        auth = llm_response.strip().lower() == "yes"
+
+        if auth:
+            self.next_state.knowledge_base.user_options["auth"] = auth
+            self.next_state.knowledge_base.user_options["jwt_secret"] = secrets.token_hex(32)
+            self.next_state.knowledge_base.user_options["refresh_token_secret"] = secrets.token_hex(32)
+            self.next_state.flag_knowledge_base_as_modified()
+
+        # if we reload the project from the 1st project state, state_manager.template will be None
+        if self.state_manager.template:
+            self.state_manager.template["description"] = self.current_state.specification.description
+        else:
+            # if we do not set this and reload the project, we will load the "old" project description we entered before reload
+            self.next_state.epics[0]["description"] = self.current_state.specification.description
+
+        self.next_state.specification = self.current_state.specification.clone()
+        self.next_state.specification.original_description = description
+        self.next_state.specification.description = self.current_state.specification.description
+
+        complexity = await self.check_prompt_complexity(self.current_state.specification.description)
+        self.next_state.specification.complexity = complexity
+
+        telemetry.set("initial_prompt", description)
+        telemetry.set("updated_prompt", self.current_state.specification.description)
+        telemetry.set("is_complex_app", complexity != Complexity.SIMPLE)
+
+        await self.ui.send_project_description(
+            {
+                "project_description": self.current_state.specification.description,
+                "project_type": self.current_state.branch.project.project_type,
+            }
+        )
+
         await telemetry.trace_code_event(
             "project-description",
             {
-                "initial_prompt": user_description,
                 "complexity": complexity,
+                "initial_prompt": description,
+                "llm_assisted_prompt": self.current_state.specification.description,
             },
         )
 
-        reviewed_spec = user_description
-        # if len(user_description) < ANALYZE_THRESHOLD and complexity != Complexity.SIMPLE:
-        #     initial_spec = await self.analyze_spec(user_description)
-        #     reviewed_spec = await self.review_spec(desc=user_description, spec=initial_spec)
+        self.next_state.epics = [
+            {
+                "id": self.current_state.epics[0]["id"],
+                "name": "Build frontend",
+                "source": "frontend",
+                "description": self.current_state.specification.description,
+                "messages": [],
+                "summary": None,
+                "completed": False,
+            }
+        ]
 
-        self.next_state.specification = self.current_state.specification.clone()
-        self.next_state.specification.original_description = user_description
-        self.next_state.specification.description = reviewed_spec
-        self.next_state.specification.complexity = complexity
-        telemetry.set("initial_prompt", user_description)
-        telemetry.set("updated_prompt", reviewed_spec)
-        telemetry.set("is_complex_app", complexity != Complexity.SIMPLE)
+        if not self.state_manager.async_tasks:
+            self.state_manager.async_tasks = []
+            await self.apply_template()
 
-        self.next_state.action = SPEC_STEP_NAME
         return AgentResponse.done(self)
 
     async def update_spec(self, iteration_mode) -> AgentResponse:
         if iteration_mode:
+            self.next_state.action = SPEC_CHANGE_FEATURE_STEP_NAME
             feature_description = self.current_state.current_iteration["user_feedback"]
         else:
+            self.next_state.action = SPEC_CHANGE_STEP_NAME
             feature_description = self.prev_response.data["description"]
 
         await self.send_message(
             f"Making the following changes to project specification:\n\n{feature_description}\n\nUpdated project specification:"
         )
-        llm = self.get_llm(SPEC_WRITER_AGENT_NAME, stream_output=True)
+        llm = self.get_llm(SPEC_WRITER_AGENT_NAME, stream_output=True, route="forwardToCenter")
         convo = AgentConvo(self).template("add_new_feature", feature_description=feature_description)
         llm_response: str = await llm(convo, temperature=0, parser=StringParser())
         updated_spec = llm_response.strip()
@@ -108,7 +344,7 @@ class SpecWriter(BaseAgent):
 
     async def check_prompt_complexity(self, prompt: str) -> str:
         is_feature = self.current_state.epics and len(self.current_state.epics) > 2
-        await self.send_message("Checking the complexity of the prompt ...")
+        await self.send_message("Checking the complexity of the prompt...\n")
         llm = self.get_llm(SPEC_WRITER_AGENT_NAME)
         convo = AgentConvo(self).template(
             "prompt_complexity",
@@ -118,91 +354,3 @@ class SpecWriter(BaseAgent):
         llm_response: str = await llm(convo, temperature=0, parser=StringParser())
         log.info(f"Complexity check response: {llm_response}")
         return llm_response.lower()
-
-    async def analyze_spec(self, spec: str) -> str:
-        msg = (
-            "Your project description seems a bit short. "
-            "The better you can describe the project, the better Pythagora will understand what you'd like to build.\n\n"
-            f"Here are some tips on how to better describe the project: {INITIAL_PROJECT_HOWTO_URL}\n\n"
-            "Let's start by refining your project idea:"
-        )
-        await self.send_message(msg)
-
-        llm = self.get_llm(SPEC_WRITER_AGENT_NAME, stream_output=True)
-        convo = AgentConvo(self).template("ask_questions").user(spec)
-        n_questions = 0
-        n_answers = 0
-
-        while True:
-            response: str = await llm(convo)
-            if len(response) > 500:
-                # The response is too long for it to be a question, assume it's the updated spec
-                confirm = await self.ask_question(
-                    ("Would you like to change or add anything? Write it out here."),
-                    allow_empty=True,
-                    buttons={"continue": "No thanks, the spec looks good"},
-                )
-                if confirm.cancelled or confirm.button == "continue" or confirm.text == "":
-                    updated_spec = response.strip()
-                    await telemetry.trace_code_event(
-                        "spec-writer-questions",
-                        {
-                            "num_questions": n_questions,
-                            "num_answers": n_answers,
-                            "new_spec": updated_spec,
-                        },
-                    )
-                    return updated_spec
-                convo.user(confirm.text)
-
-            else:
-                convo.assistant(response)
-
-                n_questions += 1
-                user_response = await self.ask_question(
-                    response,
-                    buttons={"skip": "Skip this question", "skip_all": "No more questions"},
-                    verbose=False,
-                )
-                if user_response.cancelled or user_response.button == "skip_all":
-                    convo.user(
-                        "This is enough clarification, you have all the information. "
-                        "Please output the spec now, without additional comments or questions."
-                    )
-                    response: str = await llm(convo)
-                    confirm = await self.ask_question(
-                        ("Would you like to change or add anything? Write it out here."),
-                        allow_empty=True,
-                        buttons={"continue": "No thanks, the spec looks good"},
-                    )
-                    if confirm.cancelled or confirm.button == "continue" or confirm.text == "":
-                        updated_spec = response.strip()
-                        await telemetry.trace_code_event(
-                            "spec-writer-questions",
-                            {
-                                "num_questions": n_questions,
-                                "num_answers": n_answers,
-                                "new_spec": updated_spec,
-                            },
-                        )
-                        return updated_spec
-                    convo.user(confirm.text)
-                    continue
-
-                n_answers += 1
-                if user_response.button == "skip":
-                    convo.user("Skip this question.")
-                    continue
-                else:
-                    convo.user(user_response.text)
-
-    async def review_spec(self, desc: str, spec: str) -> str:
-        convo = AgentConvo(self).template("review_spec", desc=desc, spec=spec)
-        llm = self.get_llm(SPEC_WRITER_AGENT_NAME)
-        llm_response: str = await llm(convo, temperature=0)
-        additional_info = llm_response.strip()
-        if additional_info and len(additional_info) > 6:
-            spec += "\n\nAdditional info/examples:\n\n" + additional_info
-            await self.send_message(f"\n\nAdditional info/examples:\n\n {additional_info}")
-
-        return spec

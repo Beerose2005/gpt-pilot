@@ -7,6 +7,7 @@ This app has 2 parts:
     * Client-side routing using `react-router-dom` with page components defined in `client/src/pages/` and other components in `client/src/components`
     * It is running on port 5173 and this port should be used for user testing when possible
     * All requests to the backend need to go to an endpoint that starts with `/api/` (e.g. `/api/companies`)
+    * Server proxy configuration is already configured and should not be changed in any way!
     * Implememented pages:
         * Home - home (index) page (`/`){% if options.auth %}
         * Login - login page (`/login/`) - on login, stores the auth tokens to `accessToken` and `refreshToken` variables in local storage

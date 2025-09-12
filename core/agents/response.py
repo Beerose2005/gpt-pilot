@@ -39,6 +39,9 @@ class ResponseType(str, Enum):
     UPDATE_SPECIFICATION = "update-specification"
     """We need to update the project specification."""
 
+    CREATE_SPECIFICATION = "create-specification"
+    """We need to create the project specification."""
+
 
 class AgentResponse:
     type: ResponseType = ResponseType.DONE
@@ -97,4 +100,11 @@ class AgentResponse:
             data={
                 "description": description,
             },
+        )
+
+    @staticmethod
+    def create_specification(agent: "BaseAgent") -> "AgentResponse":
+        return AgentResponse(
+            type=ResponseType.CREATE_SPECIFICATION,
+            agent=agent,
         )

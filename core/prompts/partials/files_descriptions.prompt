@@ -1,9 +1,31 @@
+{% if dir_type is defined %}
+{% if dir_type == "client" %}
+Now you need to focus only on the frontend files. These files are currently implemented on the frontend that contain all API requests to the backend with structure that you need to follow:
+{% for file in state.files %}
+{% if not state.has_frontend() or (state.has_frontend() and 'server/' not in file.path) %}
+* `{{ file.path }}{% if file.content.meta.get("description") %}: {{file.content.meta.description}}{% endif %}`
+{% endif %}{% endfor %}
+{% endif %}
+
+{% if dir_type == "server" %}
+Now you need to focus only on the backend files. These files are currently implemented in the project on the backend:
+{% for file in state.files %}{% if 'server/' in file.path %}
+* `{{ file.path }}{% if file.content.meta.get("description") %}: {{file.content.meta.description}}{% endif %}`
+{% endif %}{% endfor %}
+{% endif %}
+
+{% else %}
 These files are currently implemented on the frontend that contain all API requests to the backend with structure that you need to follow:
 {% for file in state.files %}
-{% if not state.has_frontend() or (state.has_frontend() and state.epics|length > 1 and 'client/src/components/ui' not in file.path ) or (state.has_frontend() and state.epics|length == 1 ) %}
-* `{{ file.path }}{% if file.meta.get("description") %}: {{file.meta.description}}{% endif %}`
+{% if not state.has_frontend() or (state.has_frontend() and 'server/' not in file.path) %}
+* `{{ file.path }}{% if file.content.meta.get("description") %}: {{file.content.meta.description}}{% endif %}`
 {% endif %}{% endfor %}
+
+{% if not state.working_on_frontend() %}
 These files are currently implemented in the project on the backend:
 {% for file in state.files %}{% if 'server/' in file.path %}
-* `{{ file.path }}{% if file.meta.get("description") %}: {{file.meta.description}}{% endif %}`
+* `{{ file.path }}{% if file.content.meta.get("description") %}: {{file.content.meta.description}}{% endif %}`
 {% endif %}{% endfor %}
+{% endif %}
+
+{% endif %}

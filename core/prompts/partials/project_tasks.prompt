@@ -22,12 +22,16 @@ Each epic must be related to one or more API endpoints that are called from the 
 
 ## Rule #5 (MOST IMPORTANT RULE)
 This rule applies to order of epics.
-Epics will be executed in same order that you output them. You must order them in a logical way so that epics that depend on other functionalities are implemented in later stage. The general order should be as follows:
+Epics will be executed in same order that you output them. You must order them in a logical way so that epics that depend on other functionalities are implemented in later stage.
 {% if task_type  == 'app' %}
-- The first epic **MUST** be to implement authentication. In the first epic, the first task **MUST** be to remove the mocked data for making a register and login API requests from the frontend (in the client/src/api/auth.js file) - do **NOT** split this task into multiple tasks. Next task, if needed, should be to update the User model with more required parameters like different roles, different user data, etc. In the second task, make sure to add all necessary fields to the User model in the backend.
+### Rule 5.1 - Updating the User model
+Ask yourself: "Does the User model in this app needs any additional field other then the ones that are already implemented (email, password, createdAt, updatedAt, refreshToken, isActive, and lastLoginAt)?". If the answer is yes, the user model needs to be updated, so the first epic **MUST** be to update the user model. You **MUST** think about the user model because if this step is overlooked, the entire app won't work.
 {% endif %}
-- The {% if task_type  == 'app' %}second{% else %}first{% endif %} epic **MUST** be to create any necessary scripts (if there are any). For example, a script to create an admin user, a script to seed the database, etc.
-- {% if task_type  == 'app' %}Finally{% else %}Then{% endif %}, all other epics must be about creating database models and CRUD operations (each epic must contain CRUD operations only for one single model - never for multiple). Pay attention to the API requests inside files in `client/api/` folder because they are currently using mocked data and whenever you implement an API endpoint, you just need to replace the mocked data with the real API request to the backend.
+### Rule 5.{% if task_type  == 'app' %}2{% else %}1{% endif %} - scripts
+After updating the user model, the next epic **MUST** be to create any necessary scripts (if there are any). For example, a script to create an admin user, a script to seed the database, etc.
+
+### Rule 5.{% if task_type  == 'app' %}3{% else %}2{% endif %} - other epics
+Finally, all other epics must be about creating database models and CRUD operations (each epic must contain CRUD operations only for one single model - never for multiple). Pay attention to the API requests inside files in `client/api/` folder because they are currently using mocked data and whenever you implement an API endpoint, you just need to replace the mocked data with the real API request to the backend.
 
 ## Rule #6
 Create epics for things that are not yet implemented. Do not reimplement what's already done. If something is already implemented, do not create epic for it. Continue from the implementation already there.

@@ -1,0 +1,6 @@
+The human who described the app, told you this:
+```
+{{ user_message }}
+```
+
+Rewrite the entire spec and incorporate user's message. You must oblige to what user said and make sure to follow all the rules listed above.

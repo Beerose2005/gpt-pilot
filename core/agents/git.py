@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 
 from core.agents.convo import AgentConvo
 from core.config.magic_words import GITIGNORE_CONTENT
@@ -88,9 +89,9 @@ class GitMixin:
             self.state_manager.git_used = True
             return True
 
-    async def git_commit(self) -> None:
+    async def git_commit(self, commit_message: Optional[str] = None) -> None:
         """
-        Create a git commit with the specified message.
+        Create a git commit with the specified message. Commit message is optional.
         Raises RuntimeError if the commit fails.
         """
         workspace_path = self.state_manager.get_full_project_root()
@@ -132,12 +133,13 @@ class GitMixin:
         if status_code != 0:
             raise RuntimeError(f"Failed to create initial commit: {stderr}")
 
-        llm = self.get_llm()
-        convo = AgentConvo(self).template(
-            "commit",
-            git_diff=git_diff,
-        )
-        commit_message: str = await llm(convo)
+        if not commit_message:
+            llm = self.get_llm()
+            convo = AgentConvo(self).template(
+                "commit",
+                git_diff=git_diff,
+            )
+            commit_message: str = await llm(convo)
 
         answer = await self.ui.ask_question(
             f"Do you accept this 'git commit' message? Here is suggested message: '{commit_message}'",

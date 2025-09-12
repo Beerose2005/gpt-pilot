@@ -53,7 +53,7 @@ class BaseAgent:
         """Next state of the project (write-only)."""
         return self.state_manager.next_state
 
-    async def send_message(self, message: str, extra_info: Optional[str] = None):
+    async def send_message(self, message: str, extra_info: Optional[dict] = None):
         """
         Send a message to the user.
 
@@ -79,7 +79,7 @@ class BaseAgent:
         hint: Optional[str] = None,
         verbose: bool = True,
         initial_text: Optional[str] = None,
-        extra_info: Optional[str] = None,
+        extra_info: Optional[dict] = None,
         placeholder: Optional[str] = None,
     ) -> UserInput:
         """
@@ -113,10 +113,13 @@ class BaseAgent:
             verbose=verbose,
             initial_text=initial_text,
             source=self.ui_source,
-            project_state_id=str(self.current_state.id),
+            project_state_id=str(self.current_state.id) if self.current_state.prev_state_id is not None else None,
             extra_info=extra_info,
             placeholder=placeholder,
         )
+        # Store the access token in the state manager
+        if hasattr(response, "access_token") and response.access_token:
+            self.state_manager.update_access_token(response.access_token)
         await self.state_manager.log_user_input(question, response)
         return response
 
@@ -128,8 +131,10 @@ class BaseAgent:
 
         :param content: Response content.
         """
-
-        await self.ui.send_stream_chunk(content, source=self.ui_source, project_state_id=str(self.current_state.id))
+        route = getattr(self, "_current_route", None)
+        await self.ui.send_stream_chunk(
+            content, source=self.ui_source, project_state_id=str(self.current_state.id), route=route
+        )
 
         if content is None:
             await self.ui.send_message("", source=self.ui_source, project_state_id=str(self.current_state.id))
@@ -167,7 +172,7 @@ class BaseAgent:
 
         return False
 
-    def get_llm(self, name=None, stream_output=False) -> Callable:
+    def get_llm(self, name=None, stream_output=False, route=None) -> Callable:
         """
         Get a new instance of the agent-specific LLM client.
 
@@ -177,6 +182,8 @@ class BaseAgent:
         model configuration.
 
         :param name: Name of the agent for configuration (default: class name).
+        :param stream_output: Whether to enable streaming output.
+        :param route: Route information for message routing.
         :return: LLM client for the agent.
         """
 
@@ -188,7 +195,13 @@ class BaseAgent:
         llm_config = config.llm_for_agent(name)
         client_class = BaseLLMClient.for_provider(llm_config.provider)
         stream_handler = self.stream_handler if stream_output else None
-        llm_client = client_class(llm_config, stream_handler=stream_handler, error_handler=self.error_handler)
+        llm_client = client_class(
+            llm_config,
+            stream_handler=stream_handler,
+            error_handler=self.error_handler,
+            ui=self.ui,
+            state_manager=self.state_manager,
+        )
 
         async def client(convo, **kwargs) -> Any:
             """
@@ -197,9 +210,15 @@ class BaseAgent:
             For details on optional arguments to pass to the LLM client,
             see `pythagora.llm.openai_client.OpenAIClient()`.
             """
-            response, request_log = await llm_client(convo, **kwargs)
-            await self.state_manager.log_llm_request(request_log, agent=self)
-            return response
+            # Set the route for this LLM request
+            self._current_route = route
+            try:
+                response, request_log = await llm_client(convo, **kwargs)
+                await self.state_manager.log_llm_request(request_log, agent=self)
+                return response
+            finally:
+                # Clear the route after the request
+                self._current_route = None
 
         return client
 

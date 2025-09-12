@@ -5,6 +5,7 @@ from core.log import get_logger
 # from .javascript_react import JavascriptReactProjectTemplate
 # from .node_express_mongoose import NodeExpressMongooseProjectTemplate
 from .vite_react import ViteReactProjectTemplate
+from .vite_react_swagger import ViteReactSwaggerProjectTemplate
 
 # from .react_express import ReactExpressProjectTemplate
 
@@ -24,5 +25,6 @@ PROJECT_TEMPLATES = {
     # JavascriptReactProjectTemplate.name: JavascriptReactProjectTemplate,
     # NodeExpressMongooseProjectTemplate.name: NodeExpressMongooseProjectTemplate,
     ViteReactProjectTemplate.name: ViteReactProjectTemplate,
+    ViteReactSwaggerProjectTemplate.name: ViteReactSwaggerProjectTemplate,
     # ReactExpressProjectTemplate.name: ReactExpressProjectTemplate,
 }

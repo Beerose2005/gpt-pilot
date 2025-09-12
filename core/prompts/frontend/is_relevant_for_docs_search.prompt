@@ -1,0 +1,4 @@
+{{ user_feedback }}
+
+Does this prompt require taking a look at the API documentation? For example, you would look at API documentation if you need to implement or edit an API request or response.
+Reply with a yes or a no, nothing else.

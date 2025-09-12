@@ -18,12 +18,13 @@ class FileContent(Base):
 
     # Attributes
     content: Mapped[str] = mapped_column()
+    meta: Mapped[dict] = mapped_column(default=dict, server_default="{}")
 
     # Relationships
     files: Mapped[list["File"]] = relationship(back_populates="content", lazy="raise")
 
     @classmethod
-    async def store(cls, session: AsyncSession, hash: str, content: str) -> "FileContent":
+    async def store(cls, session: AsyncSession, hash: str, content: str, meta: dict = None) -> "FileContent":
         """
         Store the file content in the database.
 
@@ -34,14 +35,17 @@ class FileContent(Base):
         :param session: The database session.
         :param hash: The hash of the file content, used as an unique ID.
         :param content: The file content as unicode string.
+        :param meta: Optional metadata for the file content.
         :return: The file content object.
         """
         result = await session.execute(select(FileContent).where(FileContent.id == hash))
         fc = result.scalar_one_or_none()
         if fc is not None:
+            if meta is not None:
+                fc.meta = meta
             return fc
 
-        fc = cls(id=hash, content=content)
+        fc = cls(id=hash, content=content, meta=meta or {})
         session.add(fc)
 
         return fc

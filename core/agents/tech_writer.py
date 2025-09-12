@@ -1,6 +1,7 @@
 from core.agents.base import BaseAgent
 from core.agents.convo import AgentConvo
 from core.agents.response import AgentResponse
+from core.config.actions import TW_WRITE
 from core.db.models.project_state import TaskStatus
 from core.log import get_logger
 from core.ui.base import success_source
@@ -23,7 +24,7 @@ class TechnicalWriter(BaseAgent):
             await self.send_congratulations()
             await self.create_readme()
 
-        self.next_state.action = "Create README.md"
+        self.next_state.action = TW_WRITE
         self.next_state.set_current_task_status(TaskStatus.DOCUMENTED)
         return AgentResponse.done(self)
 

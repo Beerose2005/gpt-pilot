@@ -22,7 +22,7 @@ async def test_get_by_id_no_match(testdb):
 
 @pytest.mark.asyncio
 async def test_get_by_id(testdb):
-    project = Project(name="test")
+    project = Project(name="test", project_type="node")
     branch = Branch(project=project)
     testdb.add(project)
     await testdb.commit()
@@ -34,7 +34,7 @@ async def test_get_by_id(testdb):
 
 @pytest.mark.asyncio
 async def test_get_last_state_no_steps(testdb):
-    project = Project(name="test")
+    project = Project(name="test", project_type="node")
     branch = Branch(project=project)
     testdb.add(project)
     await testdb.commit()
@@ -61,7 +61,7 @@ async def test_get_last_state(testdb):
 
 @pytest.mark.asyncio
 async def test_get_last_state_no_session():
-    project = Project(name="test")
+    project = Project(name="test", project_type="node")
     branch = Branch(project=project)
 
     with pytest.raises(ValueError):

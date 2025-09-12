@@ -18,7 +18,7 @@ class SessionManager:
     ...     # Do something with the session
     """
 
-    def __init__(self, config: DBConfig):
+    def __init__(self, config: DBConfig, args=None):
         """
         Initialize the session manager with the given configuration.
 
@@ -31,7 +31,8 @@ class SessionManager:
         self.SessionClass = async_sessionmaker(self.engine, expire_on_commit=False)
         self.session = None
         self.recursion_depth = 0
-
+        email_is_pythagora = args is not None and args.email is not None and args.email.endswith("@pythagora.ai")
+        self.save_llm_requests = config.save_llm_requests or email_is_pythagora
         event.listen(self.engine.sync_engine, "connect", self._on_connect)
 
     def _on_connect(self, dbapi_connection, _):

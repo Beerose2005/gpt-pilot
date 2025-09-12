@@ -13,6 +13,6 @@ def create_project_state(project_name="Test Project", branch_name=Branch.DEFAULT
     :return: The ProjectState object.
     """
 
-    project = Project(name=project_name)
+    project = Project(name=project_name, project_type="node")
     branch = Branch(name=branch_name, project=project)
     return ProjectState.create_initial_state(branch)

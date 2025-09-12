@@ -34,8 +34,8 @@ class AppType(str, Enum):
     CLI = "cli-tool"
 
 
-# FIXME: all the reponse pydantic models should be strict (see config._StrictModel), also check if we
-# can disallow adding custom Python attributes to the model
+# FIXME: all the response pydantic models should be strict (see config._StrictModel), also check if we
+#  can disallow adding custom Python attributes to the model
 class SystemDependency(BaseModel):
     name: str = Field(
         None,
@@ -109,6 +109,16 @@ class Architect(BaseAgent):
         self.next_state.specification = spec
         telemetry.set("templates", spec.templates)
         self.next_state.action = ARCHITECTURE_STEP_NAME
+        await self.ui.send_back_logs(
+            [
+                {
+                    "title": "Setting up backend",
+                    "project_state_id": "be_0",
+                    "disallow_reload": True,
+                    "labels": ["E2 / T2", "Backend setup", "done"],
+                }
+            ]
+        )
         return AgentResponse.done(self)
 
     async def select_templates(self, spec: Specification) -> tuple[str, dict[ProjectTemplateEnum, Any]]:
@@ -246,7 +256,7 @@ class Architect(BaseAgent):
                     remedy = "If you would like to use it locally, please install it before proceeding."
                 await self.send_message(f"❌ {dep['name']} is not available. {remedy}")
                 await self.ask_question(
-                    "",
+                    f"Have you installed {dep['name']}?",
                     buttons={"continue": f"I've installed {dep['name']}"},
                     buttons_only=True,
                     default="continue",

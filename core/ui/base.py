@@ -7,20 +7,32 @@ from pydantic import BaseModel
 class ProjectStage(str, Enum):
     PROJECT_NAME = "project_name"
     PROJECT_DESCRIPTION = "project_description"
+    SPECS_STARTED = "specs_started"
+    SPECS_FINISHED = "specs_finished"
+    FRONTEND_STARTED = "frontend_started"
+    FRONTEND_FINISHED = "frontend_finished"
     CONTINUE_FRONTEND = "continue_frontend"
     ITERATE_FRONTEND = "iterate_frontend"
     GET_USER_FEEDBACK = "get_user_feedback"
     OPEN_PLAN = "open_plan"
     STARTING_TASK = "starting_task"
+    TASK_FINISHED = "task_finished"
     BREAKDOWN_CHAT = "breakdown_chat"
     TEST_APP = "test_app"
     ADDITIONAL_FEEDBACK = "additional_feedback"
     DESCRIBE_CHANGE = "describe_change"
     DESCRIBE_ISSUE = "describe_issue"
+    STARTING_NEW_FEATURE = "starting_new_feature"
+    FEATURE_FINISHED = "feature_finished"
+    INITIAL_APP_FINISHED = "initial_app_finished"
 
 
 class UIClosedError(Exception):
     """The user interface has been closed (user stoped Pythagora)."""
+
+
+class UserInterruptError(Exception):
+    """The user interface has been interrupted (user stoped Pythagora)."""
 
 
 class UISource:
@@ -80,11 +92,13 @@ class UserInput(BaseModel):
     * `text`: User-provided text (if any).
     * `button`: Name (key) of the button the user selected (if any).
     * `cancelled`: Whether the user cancelled the input.
+    * `access_token`: Access token (if any).
     """
 
     text: Optional[str] = None
     button: Optional[str] = None
     cancelled: bool = False
+    access_token: Optional[str] = None
 
 
 class UIBase:
@@ -107,13 +121,37 @@ class UIBase:
         raise NotImplementedError()
 
     async def send_stream_chunk(
-        self, chunk: str, *, source: Optional[UISource] = None, project_state_id: Optional[str] = None
+        self,
+        chunk: str,
+        *,
+        source: Optional[UISource] = None,
+        project_state_id: Optional[str] = None,
+        route: Optional[str] = None,
     ):
         """
         Send a chunk of the stream to the UI.
 
         :param chunk: Chunk of the stream.
         :param source: Source of the stream (if any).
+        :param project_state_id: Current project state id.
+        :param route: Route information for message routing.
+        """
+        raise NotImplementedError()
+
+    async def send_user_input_history(
+        self,
+        message: str,
+        source: Optional[UISource] = None,
+        project_state_id: Optional[str] = None,
+        fake: Optional[bool] = False,
+    ):
+        """
+        Send a user input history (what the user said to Pythagora) message to the UI.
+
+        :param message: Message content.
+        :param source: Source of the message (if any).
+        :param project_state_id: Current project state id.
+        :param fake: Whether to actually send the message - if fake==True, will not send msg.
         """
         raise NotImplementedError()
 
@@ -123,7 +161,8 @@ class UIBase:
         *,
         source: Optional[UISource] = None,
         project_state_id: Optional[str] = None,
-        extra_info: Optional[str] = None,
+        extra_info: Optional[dict] = None,
+        fake: Optional[bool] = False,
     ):
         """
         Send a complete message to the UI.
@@ -132,12 +171,19 @@ class UIBase:
         :param source: Source of the message (if any).
         :param project_state_id: Current project state id.
         :param extra_info: Extra information to indicate special functionality in extension.
+        :param fake: Whether to actually send the message - if fake==True, will not send msg.
         """
         raise NotImplementedError()
 
     async def send_key_expired(self, message: Optional[str] = None):
         """
         Send the key expired message.
+        """
+        raise NotImplementedError()
+
+    async def send_token_expired(self):
+        """
+        Send the token expired message.
         """
         raise NotImplementedError()
 
@@ -185,7 +231,7 @@ class UIBase:
         initial_text: Optional[str] = None,
         source: Optional[UISource] = None,
         project_state_id: Optional[str] = None,
-        extra_info: Optional[str] = None,
+        extra_info: Optional[dict] = None,
         placeholder: Optional[str] = None,
     ) -> UserInput:
         """
@@ -314,7 +360,7 @@ class UIBase:
         """
         raise NotImplementedError()
 
-    async def open_editor(self, file: str, line: Optional[int] = None):
+    async def open_editor(self, file: str, line: Optional[int] = None, wait_for_response: bool = False):
         """
         Open an editor at the specified file and line.
 
@@ -323,15 +369,18 @@ class UIBase:
         """
         raise NotImplementedError()
 
-    async def send_project_root(self, path: str):
+    async def send_project_info(self, name: str, project_id: str, folder_name: str, created_at: str):
         """
-        Tell UI component about the project root path.
+        Send project details to the UI.
 
-        :param path: Project root path.
+        :param name: Project name.
+        :param project_id: Project ID.
+        :param folder_name: Project folder name.
+        :param created_at: Project creation date.
         """
         raise NotImplementedError()
 
-    async def start_important_stream(self, path: str):
+    async def set_important_stream(self, important_stream: bool = True):
         """
         Tell the extension that next stream should be visible and rendered as markdown
 
@@ -357,12 +406,15 @@ class UIBase:
         """
         raise NotImplementedError()
 
-    async def send_test_instructions(self, test_instructions: str, project_state_id: Optional[str] = None):
+    async def send_test_instructions(
+        self, test_instructions: str, project_state_id: Optional[str] = None, fake: Optional[bool] = False
+    ):
         """
         Send test instructions.
 
         :param test_instructions: Test instructions.
         :param project_state_id: Project state ID.
+        :param fake: Whether to actually send the message - if fake==True, will not send msg.
         """
         raise NotImplementedError()
 
@@ -374,13 +426,16 @@ class UIBase:
         """
         raise NotImplementedError()
 
-    async def send_file_status(self, file_path: str, file_status: str, source: Optional[UISource] = None):
+    async def send_file_status(
+        self, file_path: str, file_status: str, source: Optional[UISource] = None, fake: Optional[bool] = False
+    ):
         """
         Send file status.
 
         :param file_path: File path.
         :param file_status: File status.
         :param source: Source of the file status.
+        :param fake: Whether to actually send the message - if fake==True, will not send msg.
         """
         raise NotImplementedError()
 
@@ -396,21 +451,23 @@ class UIBase:
     async def generate_diff(
         self,
         file_path: str,
-        file_old: str,
-        file_new: str,
+        old_content: str,
+        new_content: str,
         n_new_lines: int = 0,
         n_del_lines: int = 0,
         source: Optional[UISource] = None,
+        fake: Optional[bool] = False,
     ):
         """
         Generate a diff between two files.
 
         :param file_path File path.
-        :param file_old: Old file content.
-        :param file_new: New file content.
+        :param old_content: Old file content.
+        :param new_content: New file content.
         :param n_new_lines: Number of new lines.
         :param n_del_lines: Number of deleted lines.
         :param source: Source of the diff.
+        :param fake: Whether to actually send the message - if fake==True, will not send msg.
         """
         raise NotImplementedError()
 
@@ -432,7 +489,7 @@ class UIBase:
         """
         raise NotImplementedError()
 
-    async def send_project_description(self, description: str):
+    async def send_project_description(self, state: dict):
         """
         Send the project description to the UI.
 
@@ -458,6 +515,53 @@ class UIBase:
         existing project, and recursively copy the files over.
 
         :param project_dir: Project directory.
+        """
+        raise NotImplementedError()
+
+    async def send_back_logs(
+        self,
+        items: list[dict],
+    ):
+        """
+        Send background conversation data to the UI.
+
+        :param items: List of conversation objects, each containing:
+                      - project_state_id: string
+                      - labels: array of strings
+                      - title: string
+                      - convo: array of objects
+        """
+        raise NotImplementedError()
+
+    async def send_fatal_error(
+        self,
+        message: str,
+        extra_info: Optional[dict] = None,
+        source: Optional[UISource] = None,
+        project_state_id: Optional[str] = None,
+    ):
+        pass
+
+    async def send_front_logs_headers(
+        self,
+        project_state_id: str,
+        labels: list[str],
+        title: str,
+        task_id: Optional[str] = None,
+    ):
+        """
+        Send front conversation data to the UI.
+
+        :param project_state_id: Project state ID.
+        :param labels: Array of label strings.
+        :param title: Conversation title.
+        :param task_id: Task ID.
+        """
+        raise NotImplementedError()
+
+    async def clear_main_logs(self):
+        """
+        Send message to clear main logs.
         """
         raise NotImplementedError()
 

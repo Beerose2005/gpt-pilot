@@ -38,6 +38,40 @@ Whenever you write code, make sure to add error handling for all edge cases you 
 
 {% if state.has_frontend() %}
 ## Rule 7: Showing errors on the frontend
-If there is an error in the API request, return the error message by throwing an error in the client/api/<FILE> file that makes the actual API request. In the .tsx file that called the API function, catch the error and show the error message to the user by showing `error.message` inside the toast's `description` value.
+If there is an error in the API request, log the error with `console.error(error)` and return the error message to the frontend by throwing an error in the client/api/<FILE> file that makes the actual API request. In the .tsx file that called the API function, catch the error and show the error message to the user by showing `error.message` inside the toast's `description` value.
+---example_for_rule_7---
+For example, let's say a client needs to submit some answer to the backend. In the client/api/<FILE>.ts file you would catch the error and return it like this:
+```
+try {
+    const response = await api.post(`/submit/answer/`, data);
+    return response.data;
+} catch (error) {
+    console.error(error);
+    throw new Error(error?.response?.data?.error || error.message);
+}
+```
+
+And in the .tsx file, catch the error and show it like this:
+```
+const onSubmit = async (data) => {
+    try {
+      setSubmitting(true)
+      await submitAnswer(data)
+      toast({
+        title: "Success",
+        description: "Answer submitted successfully"
+      })
+    } catch (error) {
+      console.error("Login error:", error.message)
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: error.message || "Failed to submit answers"
+      })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+```
 ~~~END_OF_CODING_RULES~~~
 {% endif %}

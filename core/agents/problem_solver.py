@@ -23,6 +23,7 @@ class AlternativeSolutions(BaseModel):
     )
 
 
+# TODO: add next state actions whenever this agent is reactivated
 class ProblemSolver(IterationPromptMixin, BaseAgent):
     agent_type = "problem-solver"
     display_name = "Problem Solver"

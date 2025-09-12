@@ -1,5 +1,6 @@
 from core.agents.base import BaseAgent
 from core.agents.response import AgentResponse, ResponseType
+from core.config.actions import CONTINUE_WHEN_DONE, HUMAN_INTERVENTION_QUESTION
 
 
 class HumanInput(BaseAgent):
@@ -15,8 +16,9 @@ class HumanInput(BaseAgent):
     async def human_intervention(self, step) -> AgentResponse:
         description = step["human_intervention_description"]
 
+        await self.send_message(f"## {HUMAN_INTERVENTION_QUESTION}\n\n{description}")
         await self.ask_question(
-            f"I need human intervention: {description}",
+            CONTINUE_WHEN_DONE,
             buttons={"continue": "Continue"},
             default="continue",
             buttons_only=True,
@@ -35,12 +37,5 @@ class HumanInput(BaseAgent):
             # figure out where its local files are and how to open it.
             full_path = self.state_manager.file_system.get_full_path(file)
 
-            await self.send_message(f"Input required on {file}:{line}")
-            await self.ui.open_editor(full_path, line)
-            await self.ask_question(
-                f"Please open {file} and modify line {line} according to the instructions.",
-                buttons={"continue": "Continue"},
-                default="continue",
-                buttons_only=True,
-            )
+            await self.ui.open_editor(full_path, line, True)
         return AgentResponse.done(self)

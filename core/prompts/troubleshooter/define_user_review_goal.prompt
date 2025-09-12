@@ -42,6 +42,12 @@ Here is an example output with a few user steps:
 }
 ---end_of_example---
 
+** VERY IMPORTANT **:
+When you mention a URL, always write the entire URL. For example, ** DO NOT ** write /some/url but write http://localhost:5173/some/url for the frontend or http://localhost:3000/some/url for the backend. This way, the user can just copy and paste the URL into their browser without needing to think about it.
+
+** VERY IMPORTANT **:
+If you need to execute a Mongo command, make sure to mention the entire command and use the package mongosh and ** NOT ** mongo - for example, mongosh --eval 'db.collection.find({})'
+
 If nothing needs to be tested for this task, instead of outputting the steps, just output an empty list like this:
 ---example_when_test_not_needed---
 {

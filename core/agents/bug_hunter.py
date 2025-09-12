@@ -1,3 +1,4 @@
+import asyncio
 import json
 from enum import Enum
 
@@ -8,6 +9,16 @@ from core.agents.convo import AgentConvo
 from core.agents.mixins import ChatWithBreakdownMixin, TestSteps
 from core.agents.response import AgentResponse
 from core.config import CHECK_LOGS_AGENT_NAME, magic_words
+from core.config.actions import (
+    BH_ADDITIONAL_FEEDBACK,
+    BH_HUMAN_TEST_AGAIN,
+    BH_IS_BUG_FIXED,
+    BH_START_BUG_HUNT,
+    BH_START_USER_TEST,
+    BH_STARTING_PAIR_PROGRAMMING,
+    BH_WAIT_BUG_REP_INSTRUCTIONS,
+)
+from core.config.constants import CONVO_ITERATIONS_LIMIT
 from core.db.models.project_state import IterationStatus
 from core.llm.parser import JSONParser
 from core.log import get_logger
@@ -51,7 +62,10 @@ class BugHunter(ChatWithBreakdownMixin, BaseAgent):
         current_iteration = self.current_state.current_iteration
 
         if "bug_reproduction_description" not in current_iteration:
-            await self.get_bug_reproduction_instructions()
+            if not self.state_manager.async_tasks:
+                self.state_manager.async_tasks = []
+                self.state_manager.async_tasks.append(asyncio.create_task(self.get_bug_reproduction_instructions()))
+
         if current_iteration["status"] == IterationStatus.HUNTING_FOR_BUG:
             # TODO determine how to find a bug (eg. check in db, ask user a question, etc.)
             return await self.check_logs()
@@ -67,6 +81,7 @@ class BugHunter(ChatWithBreakdownMixin, BaseAgent):
 
     async def get_bug_reproduction_instructions(self):
         await self.send_message("Finding a way to reproduce the bug ...")
+        await self.ui.set_important_stream()
         llm = self.get_llm()
         convo = (
             AgentConvo(self)
@@ -86,6 +101,9 @@ class BugHunter(ChatWithBreakdownMixin, BaseAgent):
         )
 
     async def check_logs(self, logs_message: str = None):
+        self.next_state.action = BH_START_BUG_HUNT.format(
+            self.current_state.tasks.index(self.current_state.current_task) + 1
+        )
         llm = self.get_llm(CHECK_LOGS_AGENT_NAME, stream_output=True)
         convo = self.generate_iteration_convo_so_far()
         await self.ui.start_breakdown_stream()
@@ -120,50 +138,64 @@ class BugHunter(ChatWithBreakdownMixin, BaseAgent):
             await self.ui.send_bug_hunter_status("adding_logs", num_bug_hunting_cycles)
 
         self.next_state.flag_iterations_as_modified()
+        await self.async_task_finish()
         return AgentResponse.done(self)
 
     async def ask_user_to_test(self, awaiting_bug_reproduction: bool = False, awaiting_user_test: bool = False):
-        await self.ui.stop_app()
+        if awaiting_user_test:
+            self.next_state.action = BH_START_USER_TEST.format(
+                self.current_state.tasks.index(self.current_state.current_task) + 1
+            )
+        elif awaiting_bug_reproduction:
+            self.next_state.action = BH_WAIT_BUG_REP_INSTRUCTIONS.format(
+                self.current_state.tasks.index(self.current_state.current_task) + 1
+            )
+
+        await self.async_task_finish()
+
         test_instructions = self.current_state.current_iteration["bug_reproduction_description"]
         await self.ui.send_message(
             "Start the app and test it by following these instructions:\n\n", source=pythagora_source
         )
-        await self.send_message("")
         await self.ui.send_test_instructions(test_instructions, project_state_id=str(self.current_state.id))
 
         if self.current_state.run_command:
             await self.ui.send_run_command(self.current_state.run_command)
 
-        await self.ask_question(
-            "Please test the app again.",
+        user_feedback = await self.ask_question(
+            BH_HUMAN_TEST_AGAIN,
             buttons={"done": "I am done testing"},
             buttons_only=True,
             default="continue",
-            extra_info="restart_app",
-            hint="Instructions for testing:\n\n" + self.current_state.current_iteration["bug_reproduction_description"],
+            extra_info={"restart_app": True},
+            hint="Instructions for testing:\n\n" + test_instructions,
         )
 
         if awaiting_user_test:
+            self.next_state.current_iteration["bug_hunting_cycles"][-1]["fix_attempted"] = True
+
+        if awaiting_user_test and not user_feedback.text:
             buttons = {"yes": "Yes, the issue is fixed", "no": "No", "start_pair_programming": "Start Pair Programming"}
             user_feedback = await self.ask_question(
-                "Is the bug you reported fixed now?",
+                BH_IS_BUG_FIXED,
                 buttons=buttons,
                 default="yes",
                 buttons_only=True,
-                hint="Instructions for testing:\n\n"
-                + self.current_state.current_iteration["bug_reproduction_description"],
+                hint="Instructions for testing:\n\n" + test_instructions,
             )
-            self.next_state.current_iteration["bug_hunting_cycles"][-1]["fix_attempted"] = True
+            # self.next_state.current_iteration["bug_hunting_cycles"][-1]["fix_attempted"] = True
 
             if user_feedback.button == "yes":
                 self.next_state.complete_iteration()
+                return AgentResponse.done(self)
             elif user_feedback.button == "start_pair_programming":
                 self.next_state.current_iteration["status"] = IterationStatus.START_PAIR_PROGRAMMING
                 self.next_state.flag_iterations_as_modified()
+                return AgentResponse.done(self)
             else:
                 awaiting_bug_reproduction = True
 
-        if awaiting_bug_reproduction:
+        if awaiting_bug_reproduction and not user_feedback.text:
             buttons = {
                 "done": "Bug is fixed",
                 "continue": "Continue without feedback",  # DO NOT CHANGE THIS TEXT without changing it in the extension (it is hardcoded)
@@ -175,12 +207,11 @@ class BugHunter(ChatWithBreakdownMixin, BaseAgent):
                 }
             )
             user_feedback = await self.ask_question(
-                "Please add any additional feedback that could help Pythagora solve this bug",
+                BH_ADDITIONAL_FEEDBACK,
                 buttons=buttons,
                 default="continue",
-                extra_info="collect_logs",
-                hint="Instructions for testing:\n\n"
-                + self.current_state.current_iteration["bug_reproduction_description"],
+                extra_info={"collect_logs": True},
+                hint="Instructions for testing:\n\n" + test_instructions,
             )
 
             if user_feedback.button == "done":
@@ -191,21 +222,32 @@ class BugHunter(ChatWithBreakdownMixin, BaseAgent):
                 self.next_state.flag_iterations_as_modified()
                 return AgentResponse.done(self)
 
-            # TODO select only the logs that are new (with PYTHAGORA_DEBUGGING_LOG)
-            self.next_state.current_iteration["bug_hunting_cycles"][-1]["backend_logs"] = None
-            self.next_state.current_iteration["bug_hunting_cycles"][-1]["frontend_logs"] = None
-            self.next_state.current_iteration["bug_hunting_cycles"][-1]["user_feedback"] = user_feedback.text
-            self.next_state.current_iteration["status"] = IterationStatus.HUNTING_FOR_BUG
+        # TODO select only the logs that are new (with PYTHAGORA_DEBUGGING_LOG)
+        self.next_state.current_iteration["bug_hunting_cycles"][-1]["backend_logs"] = None
+        self.next_state.current_iteration["bug_hunting_cycles"][-1]["frontend_logs"] = None
+        self.next_state.current_iteration["bug_hunting_cycles"][-1]["user_feedback"] = user_feedback.text
+        self.next_state.current_iteration["status"] = IterationStatus.HUNTING_FOR_BUG
+        self.next_state.current_iteration["attempts"] += 1
+        self.next_state.flag_iterations_as_modified()
+
+        await self.ui.send_project_stage(
+            {
+                "bug_fix_attempt": self.next_state.current_iteration["attempts"],
+            }
+        )
 
         return AgentResponse.done(self)
 
     async def start_pair_programming(self):
+        self.next_state.action = BH_STARTING_PAIR_PROGRAMMING.format(
+            self.current_state.tasks.index(self.current_state.current_task) + 1
+        )
         llm = self.get_llm(stream_output=True)
         convo = self.generate_iteration_convo_so_far(True)
         if len(convo.messages) > 1:
             convo.remove_last_x_messages(1)
         convo = convo.template("problem_explanation")
-        await self.ui.start_important_stream()
+        await self.ui.set_important_stream()
         initial_explanation = await llm(convo, temperature=0.5)
 
         llm = self.get_llm()
@@ -227,6 +269,8 @@ class BugHunter(ChatWithBreakdownMixin, BaseAgent):
                 ]
             }
         )
+
+        await self.async_task_finish()
 
         while True:
             self.next_state.current_iteration["initial_explanation"] = initial_explanation
@@ -261,8 +305,8 @@ class BugHunter(ChatWithBreakdownMixin, BaseAgent):
             # TODO: remove when Leon checks
             convo.remove_last_x_messages(2)
 
-            if len(convo.messages) > 10:
-                convo.trim(1, 2)
+            if len(convo.messages) > CONVO_ITERATIONS_LIMIT:
+                convo.slice(1, CONVO_ITERATIONS_LIMIT)
 
             # TODO: in the future improve with a separate conversation that parses the user info and goes into an appropriate if statement
             if next_step.button == "done":
@@ -271,19 +315,19 @@ class BugHunter(ChatWithBreakdownMixin, BaseAgent):
             elif next_step.button == "question":
                 user_response = await self.ask_question("Oh, cool, what would you like to know?")
                 convo = convo.template("ask_a_question", question=user_response.text)
-                await self.ui.start_important_stream()
+                await self.ui.set_important_stream()
                 llm_answer = await llm(convo, temperature=0.5)
                 await self.send_message(llm_answer)
             elif next_step.button == "tell_me_more":
                 convo.template("tell_me_more")
-                await self.ui.start_important_stream()
+                await self.ui.set_important_stream()
                 response = await llm(convo, temperature=0.5)
                 await self.send_message(response)
             elif next_step.button == "other":
                 # this is the same as "question" - we want to keep an option for users to click to understand if we're missing something with other options
                 user_response = await self.ask_question("Let me know what you think ...")
                 convo = convo.template("ask_a_question", question=user_response.text)
-                await self.ui.start_important_stream()
+                await self.ui.set_important_stream()
                 llm_answer = await llm(convo, temperature=0.5)
                 await self.send_message(llm_answer)
             elif next_step.button == "solution_hint":
@@ -291,7 +335,7 @@ class BugHunter(ChatWithBreakdownMixin, BaseAgent):
                 while True:
                     human_hint = await self.ask_question(human_hint_label)
                     convo = convo.template("instructions_from_human_hint", human_hint=human_hint.text)
-                    await self.ui.start_important_stream()
+                    await self.ui.set_important_stream()
                     llm = self.get_llm(CHECK_LOGS_AGENT_NAME, stream_output=True)
                     human_readable_instructions = await llm(convo, temperature=0.5)
                     human_approval = await self.ask_question(
@@ -309,7 +353,7 @@ class BugHunter(ChatWithBreakdownMixin, BaseAgent):
                 break
             elif next_step.button == "tell_me_more":
                 convo.template("tell_me_more")
-                await self.ui.start_important_stream()
+                await self.ui.set_important_stream()
                 response = await llm(convo, temperature=0.5)
                 await self.send_message(response)
                 continue
@@ -341,7 +385,17 @@ class BugHunter(ChatWithBreakdownMixin, BaseAgent):
                 user_feedback=hunting_cycle.get("user_feedback"),
             )
 
+        if len(convo.messages) > CONVO_ITERATIONS_LIMIT:
+            convo.slice(1, CONVO_ITERATIONS_LIMIT)
+
         return convo
+
+    async def async_task_finish(self):
+        if self.state_manager.async_tasks:
+            if not self.state_manager.async_tasks[-1].done():
+                await self.send_message("Waiting for the bug reproduction instructions...")
+                await self.state_manager.async_tasks[-1]
+            self.state_manager.async_tasks = []
 
     def set_data_for_next_hunting_cycle(self, human_readable_instructions, new_status):
         self.next_state.current_iteration["description"] = human_readable_instructions
@@ -355,9 +409,3 @@ class BugHunter(ChatWithBreakdownMixin, BaseAgent):
         ]
 
         self.next_state.current_iteration["status"] = new_status
-
-    async def continue_on(self, convo, button_value, user_response):
-        llm = self.get_llm(stream_output=True)
-        convo = convo.template("continue_on")
-        continue_on = await llm(convo, temperature=0.5)
-        return continue_on

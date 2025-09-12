@@ -4,12 +4,12 @@ from typing import TYPE_CHECKING, Optional, Union
 from unicodedata import normalize
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, delete, inspect, select
+from sqlalchemy import Row, and_, delete, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column, relationship, selectinload
 from sqlalchemy.sql import func
 
-from core.db.models import Base
+from core.db.models import Base, File
 
 if TYPE_CHECKING:
     from core.db.models import Branch
@@ -27,6 +27,7 @@ class Project(Base):
     folder_name: Mapped[str] = mapped_column(
         default=lambda context: Project.get_folder_from_project_name(context.get_current_parameters()["name"])
     )
+    project_type: Mapped[str] = mapped_column(default="node")
 
     # Relationships
     branches: Mapped[list["Branch"]] = relationship(back_populates="project", cascade="all", lazy="raise")
@@ -45,6 +46,31 @@ class Project(Base):
 
         result = await session.execute(select(Project).where(Project.id == project_id))
         return result.scalar_one_or_none()
+
+    @staticmethod
+    async def rename(session: "AsyncSession", id: UUID, name: str, dir_name: str) -> Optional["Project"]:
+        """
+        Rename a project and update its folder name.
+
+        :param session: The SQLAlchemy session.
+        :param id: The project ID.
+        :param name: The new project name.
+        :param dir_name: The new folder name for the project.
+        :return: The updated Project object if found, None otherwise.
+        """
+        # Get the project by ID
+        query = select(Project).where(Project.id == id)
+        result = await session.execute(query)
+        project = result.scalar_one_or_none()
+
+        if project is None:
+            return None
+
+        # Update project name and dir name
+        project.name = name
+        project.folder_name = dir_name
+
+        return project
 
     async def get_branch(self, name: Optional[str] = None) -> Optional["Branch"]:
         """
@@ -67,7 +93,28 @@ class Project(Base):
         return result.scalar_one_or_none()
 
     @staticmethod
-    async def get_all_projects(session: "AsyncSession") -> list["Project"]:
+    async def get_file_for_project(session: AsyncSession, project_state_id: UUID, path: str) -> Optional["File"]:
+        file_result = await session.execute(
+            select(File).where(File.project_state_id == project_state_id, File.path == path)
+        )
+        return file_result.scalar_one_or_none()
+
+    @staticmethod
+    async def get_branches_for_project_id(session: AsyncSession, project_id: UUID) -> list["Branch"]:
+        from core.db.models import Branch
+
+        branch_result = await session.execute(select(Branch).where(Branch.project_id == project_id))
+        return branch_result.scalars().all()
+
+    @staticmethod
+    async def get_all_projects(session: "AsyncSession") -> list[Row]:
+        query = select(Project.id, Project.name, Project.created_at, Project.folder_name).order_by(Project.name)
+
+        result = await session.execute(query)
+        return result.fetchall()
+
+    @staticmethod
+    async def get_all_projects_with_branches_states(session: "AsyncSession") -> list["Project"]:
         """
         Get all projects.
 

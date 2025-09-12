@@ -39,6 +39,30 @@ def get_git_commit() -> Optional[str]:
         return f.read().strip()
 
 
+def get_git_branch() -> Optional[str]:
+    """
+    Return the current git branch name (if running from a repo).
+
+    :return: branch name or None if not on a branch or not a git repo
+    """
+    if not isdir(GIT_DIR_PATH):
+        return None
+
+    git_head = join(GIT_DIR_PATH, "HEAD")
+    if not isfile(git_head):
+        return None
+
+    with open(git_head, "r", encoding="utf-8") as f:
+        ref = f.read().strip()
+
+    if ref.startswith("ref: "):
+        # Example: ref: refs/heads/main
+        ref_path = ref[5:]
+        if ref_path.startswith("refs/heads/"):
+            return ref_path[len("refs/heads/") :]
+    return None
+
+
 def get_package_version() -> str:
     """
     Get package version as defined pyproject.toml.
@@ -83,4 +107,4 @@ def get_version() -> str:
     return version
 
 
-__all__ = ["get_version"]
+__all__ = ["get_version", "get_git_branch"]

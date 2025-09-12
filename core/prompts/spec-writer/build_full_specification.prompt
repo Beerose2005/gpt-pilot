@@ -1,0 +1,16 @@
+You need to build full specification for an app that a human described like this:
+```
+{{ initial_prompt }}
+```
+
+Here are the rules that you **MUST** follow while writing the specs:
+**IMPORTANT**
+DO NOT mention any kind of testing, either manual or automated - no unit, integration, regression, end to end or any other kind of testing.
+DO NOT mention any kind of deployment instructions, CICD pipeline or anything that's not related to the actual development of the app or user interactions
+DO NOT mention any kind of stack - it will be written in React+ShadCN and Nodejs for backend
+DO NOT mention anything about database models
+DO NOT mention anything about the architecture or hosting
+
+**IMPORTANT THINGS YOU SHOULD DO**
+Focus on the user interactions because this specification will be read by a semi technical person who's main goal is to understand how this app will look and feel to the end user.
+If there are any 3rd party technologies or tools that need to be used for this app, add a section with an overview of the 3rd party tech that needs to be utilized.

@@ -5,9 +5,12 @@
 
 from .base import Base
 from .branch import Branch
+from .chat_convo import ChatConvo
+from .chat_message import ChatMessage
 from .exec_log import ExecLog
 from .file import File
 from .file_content import FileContent
+from .knowledge_base import KnowledgeBase
 from .llm_request import LLMRequest
 from .project import Project
 from .project_state import ProjectState
@@ -21,9 +24,12 @@ __all__ = [
     "ExecLog",
     "File",
     "FileContent",
+    "KnowledgeBase",
     "LLMRequest",
     "Project",
     "ProjectState",
     "Specification",
     "UserInput",
+    "ChatConvo",
+    "ChatMessage",
 ]

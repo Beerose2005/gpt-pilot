@@ -179,7 +179,7 @@ class LegacyDatabaseImporter:
         log.info(f"Importing app {app_info['name']} (id={app_id}) ...")
 
         async with self.session_manager as session:
-            project = Project(id=UUID(app_id), name=app_info["name"])
+            project = Project(id=UUID(app_id), name=app_info["name"], project_type="node")
             branch = Branch(project=project)
             state = ProjectState.create_initial_state(branch)
 
