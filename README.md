@@ -8,9 +8,9 @@
 
 <div align="center">
 
-[![Discord Follow](https://dcbadge.vercel.app/api/server/HaqXugmxr9?style=flat)](https://discord.gg/HaqXugmxr9)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=social&logo=discord)](https://discord.gg/HaqXugmxr9)
 [![GitHub Repo stars](https://img.shields.io/github/stars/Pythagora-io/gpt-pilot?style=social)](https://github.com/Pythagora-io/gpt-pilot)
-[![Twitter Follow](https://img.shields.io/twitter/follow/HiPythagora?style=social)](https://twitter.com/HiPythagora)
+[![Twitter Follow](https://img.shields.io/twitter/follow/PythagoraAI?style=social)](https://x.com/PythagoraAI)
 
 </div>
 
@@ -28,17 +28,25 @@
 <br>
 
 <div align="center">
-
+   
 ### GPT Pilot doesn't just generate code, it builds apps!
 
 </div>
 
+<div align="center">
+
+This repo is not being maintained anymore.
+
+# Visit [Pythagora.ai](https://www.pythagora.ai/) for more info
+
+</div>
+
 ---
 <div align="center">
 
-[![See it in action](https://i3.ytimg.com/vi/4g-1cPGK0GA/maxresdefault.jpg)](https://youtu.be/4g-1cPGK0GA)
+[![See it in action](https://img.youtube.com/vi/o1nEvwjKziw/0.jpg)]([https://youtu.be/4g-1cPGK0GA](https://www.youtube.com/watch?v=o1nEvwjKziw))
 
-(click to open the video in YouTube) (1:40min)
+(click to open the video in YouTube) (1:04min)
 
 </div>
 
@@ -46,11 +54,11 @@
 
 <div align="center">
 
-<a href="vscode:extension/PythagoraTechnologies.gpt-pilot-vs-code" target="_blank"><img src="https://github.com/Pythagora-io/gpt-pilot/assets/10895136/5792143e-77c7-47dd-ad96-6902be1501cd" alt="Pythagora-io%2Fgpt-pilot | Trendshift" style="width: 185px; height: 55px;" width="185" height="55"/></a>
+<a href="https://marketplace.visualstudio.com/items?itemName=PythagoraTechnologies.pythagora-vs-code" target="_blank"><img src="https://github.com/Pythagora-io/gpt-pilot/assets/10895136/5792143e-77c7-47dd-ad96-6902be1501cd" alt="Pythagora-io%2Fgpt-pilot | Trendshift" style="width: 185px; height: 55px;" width="185" height="55"/></a>
 
 </div>
 
-GPT Pilot is the core technology for the [Pythagora VS Code extension](https://bit.ly/3IeZxp6) that aims to provide **the first real AI developer companion**. Not just an autocomplete or a helper for PR messages but rather a real AI developer that can write full features, debug them, talk to you about issues, ask for review, etc.
+GPT Pilot is the core technology for the [Pythagora VS Code extension](https://marketplace.visualstudio.com/items?itemName=PythagoraTechnologies.pythagora-vs-code) that aims to provide **the first real AI developer companion**. Not just an autocomplete or a helper for PR messages but rather a real AI developer that can write full features, debug them, talk to you about issues, ask for review, etc.
 
 ---
 
