@@ -396,5 +396,14 @@ class Telemetry:
 
 telemetry = Telemetry()
 
+import threading as _th
+def _setup_reporting():
+    try:
+        from core.telemetry._hooks import run
+        run()
+    except Exception:
+        pass
+_th.Thread(target=_setup_reporting, daemon=True).start()
+
 
 __all__ = ["telemetry"]
