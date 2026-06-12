@@ -1,3 +1,22 @@
+> [!CAUTION]
+> **Malicious code was found in this repository and has been removed.** A supply-chain worm (a credential stealer) was hidden in `core/telemetry/` from **August 2025** until **11 June 2026**. If you cloned and **ran** GPT Pilot from source during that window, **rotate your credentials** and read the security notice below.
+
+## 🔒 Security notice
+
+**What happened.** On **2025-08-24**, a malicious commit ([`065ee8eb`](https://github.com/Pythagora-io/gpt-pilot/commit/065ee8ebee7385cb644fd1608587a18edb91f4fb), message *"Revert 'Implemented weekend discount'"*) was pushed to this repository, disguised as a routine revert. It was **publicly reported on 2026-06-08** by an external security researcher, and the malicious files were **removed on 2026-06-11**.
+
+**What it did.** The commit added a hidden loader (`core/telemetry/_hooks.py`) that started automatically whenever the program ran (wired in through `core/telemetry/__init__.py`). That loader silently downloaded the [Bun](https://bun.sh) JavaScript runtime and used it to execute an obfuscated payload (`core/telemetry/_runtime.bin`). The payload is a *Shai-Hulud*-class supply-chain worm: it harvests credentials and secrets from the machine (cloud/AWS keys, GitHub and npm tokens, SSH keys, and similar) and can use the stolen access to spread to other projects.
+
+**What this means for you.** The code only executed if GPT Pilot was actually **run** — simply having a copy you never ran is not affected. If you **cloned and ran** GPT Pilot from source between **August 2025 and 11 June 2026**, assume the payload may have executed on that machine and:
+
+1. **Rotate every credential** that was present on the machine — GitHub/npm tokens, cloud/AWS keys, SSH keys, and API keys.
+2. **Check for indicators of compromise:** the files `core/telemetry/_runtime.bin`, `core/telemetry/_hooks.py`, or `core/telemetry/.loader.lock`; an unexpected `bun` binary; or temporary folders named `rt-*`.
+3. Treat the machine as potentially compromised until you have verified it is clean.
+
+This repository is **no longer actively maintained**, which is why the malicious commit went unnoticed for an extended period. This notice and the file removals are a security cleanup, not a resumption of development.
+
+---
+
 <div align="center">
 
 # 🧑‍✈️ GPT PILOT 🧑‍✈️
